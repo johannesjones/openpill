@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "openpill": {
+      "command": "/bin/bash",
+      "args": [
+        "-c",
+        "cd /Users/jjones/git/knowledge-pill-mcp && /opt/anaconda3/bin/python server.py"
+      ],
+      "env": {
+        "MONGO_URI": "mongodb://localhost:27017",
+        "MONGO_DB": "knowledge_pills_db",
+        "EMBEDDING_MODEL": "ollama/nomic-embed-text",
+        "JANITOR_MODEL": "ollama/llama3",
+        "EXTRACTOR_MODEL": "ollama/llama3"
+      }
+    }
+  }
+}

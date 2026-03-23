@@ -1,0 +1,4 @@
+User: We're standardizing on Python 3.11 for the service and using Motor for async MongoDB.
+Assistant: Good choices. Pin `python_requires>=3.11` in pyproject and use `AsyncIOMotorClient` with connection pooling.
+User: What about embeddings for RAG?
+Assistant: Use one embedding model per index; re-embed if you change models.

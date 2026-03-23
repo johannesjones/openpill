@@ -1,0 +1,4 @@
+OpenClaw external semantic memory consistency policy
+architecture choices connected to contradiction workflow
+two hop traversal for memory consistency graph
+benchmark graph openclaw consistency

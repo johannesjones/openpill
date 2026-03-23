@@ -1,0 +1,697 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>OpenPill – Save My Chat</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root {
+      --bg: #0f1419;
+      --surface: #1a2332;
+      --surface2: #243044;
+      --text: #e7e9ea;
+      --muted: #8b98a5;
+      --accent: #1d9bf0;
+      --accent-hover: #1a8cd8;
+      --ok: #00ba7c;
+      --warn: #f7931a;
+      --radius: 10px;
+      --font: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f4f6f8;
+        --surface: #fff;
+        --surface2: #eef1f4;
+        --text: #0f1419;
+        --muted: #536471;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: var(--font);
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 0 1rem 3rem;
+      line-height: 1.45;
+    }
+    .wrap { max-width: 1000px; margin: 0 auto; }
+    header.app-header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 0.75rem;
+      padding: 1.25rem 0 0.5rem;
+      border-bottom: 1px solid var(--surface2);
+      margin-bottom: 1rem;
+    }
+    header h1 { font-size: 1.5rem; margin: 0; font-weight: 700; }
+    #statsBar { font-size: 0.8rem; color: var(--muted); }
+    #toast {
+      position: fixed;
+      bottom: 1rem;
+      right: 1rem;
+      max-width: 360px;
+      padding: 0.65rem 1rem;
+      border-radius: var(--radius);
+      background: var(--surface2);
+      color: var(--text);
+      font-size: 0.9rem;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.35);
+      display: none;
+      z-index: 100;
+    }
+    #toast.show { display: block; }
+    #toast.ok { border-left: 3px solid var(--ok); }
+    #toast.err { border-left: 3px solid #f4212e; }
+    nav.section-nav {
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+      margin-bottom: 1.25rem;
+    }
+    nav.section-nav a {
+      color: var(--accent);
+      text-decoration: none;
+      font-size: 0.9rem;
+      padding: 0.35rem 0.65rem;
+      border-radius: 6px;
+      border: 1px solid var(--surface2);
+    }
+    nav.section-nav a:hover { background: var(--surface2); }
+    .card {
+      background: var(--surface);
+      border-radius: var(--radius);
+      padding: 1rem 1.15rem;
+      margin-bottom: 1.25rem;
+      border: 1px solid var(--surface2);
+    }
+    .card h2 { margin: 0 0 0.75rem; font-size: 1.15rem; }
+    textarea, input[type="text"], select {
+      width: 100%;
+      padding: 0.5rem 0.6rem;
+      font: inherit;
+      border-radius: 8px;
+      border: 1px solid var(--surface2);
+      background: var(--bg);
+      color: var(--text);
+    }
+    textarea { min-height: 140px; resize: vertical; }
+    button {
+      padding: 0.45rem 1rem;
+      font: inherit;
+      cursor: pointer;
+      border-radius: 8px;
+      border: none;
+      background: var(--accent);
+      color: #fff;
+      font-weight: 600;
+    }
+    button:hover { background: var(--accent-hover); }
+    button.secondary { background: var(--surface2); color: var(--text); }
+    button.danger { background: #8b1538; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .row { display: flex; flex-wrap: wrap; gap: 1.25rem; }
+    .col { flex: 1 1 300px; }
+    .small { font-size: 0.85rem; color: var(--muted); }
+    #result, #pill-list, #pill-detail {
+      margin-top: 0.75rem;
+      padding: 0.75rem;
+      background: var(--surface2);
+      border-radius: 8px;
+      min-height: 2rem;
+      white-space: pre-wrap;
+      font-size: 0.9rem;
+    }
+    .pill-item {
+      padding: 0.45rem 0;
+      border-bottom: 1px solid var(--surface2);
+      cursor: pointer;
+    }
+    .pill-item:last-child { border-bottom: none; }
+    .pill-item-title { font-weight: 600; }
+    .pill-item-meta { font-size: 0.85rem; color: var(--muted); }
+    .pill-detail-field { margin-bottom: 0.75rem; }
+    .pill-detail-field label { display: block; font-size: 0.8rem; color: var(--muted); margin-bottom: 0.2rem; }
+    .pill-detail-actions { margin-top: 0.75rem; display: flex; flex-wrap: wrap; gap: 0.5rem; }
+    .status-archived { color: #f7931a; font-weight: 600; }
+    .search-mode { display: flex; gap: 1rem; align-items: center; margin-bottom: 0.5rem; flex-wrap: wrap; }
+    .rel-table { width: 100%; font-size: 0.85rem; border-collapse: collapse; }
+    .rel-table th, .rel-table td { padding: 0.35rem 0.5rem; text-align: left; border-bottom: 1px solid var(--surface2); }
+    .link-picker { margin-top: 0.5rem; padding: 0.5rem; background: var(--bg); border-radius: 8px; }
+    .link-pick-item { display: block; width: 100%; text-align: left; margin: 0.2rem 0; padding: 0.35rem; cursor: pointer; border-radius: 6px; border: 1px solid transparent; background: transparent; color: var(--text); font-size: 0.85rem; }
+    .link-pick-item:hover { border-color: var(--accent); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="app-header">
+      <h1>OpenPill</h1>
+      <div id="statsBar">Loading stats…</div>
+    </header>
+    <p class="small">Distill chats into memory, search by keyword or meaning, edit pills and graph links.</p>
+
+    <nav class="section-nav" aria-label="Sections">
+      <a href="#section-save">1. Save chat</a>
+      <a href="#section-search">2. Search</a>
+      <a href="#section-detail">3. Pill detail</a>
+    </nav>
+
+    <div id="toast" role="status"></div>
+
+    <div class="row">
+      <div class="col">
+        <section id="section-save" class="card">
+          <h2>1. Save my chat</h2>
+          <label for="transcript" class="small">Paste conversation transcript</label>
+          <textarea id="transcript" placeholder="User: ...&#10;Assistant: ..."></textarea>
+          <div style="margin-top:0.5rem">
+            <label class="small" for="sourceRef">Source reference (optional)</label>
+            <input id="sourceRef" type="text" placeholder="e.g. chatgpt-2026-03-13" />
+          </div>
+          <button id="saveBtn" type="button">Distill &amp; save</button>
+          <div id="result"></div>
+        </section>
+      </div>
+
+      <div class="col">
+        <section id="section-search" class="card">
+          <h2>2. Search pills</h2>
+          <div class="search-mode">
+            <label><input type="radio" name="searchMode" value="keyword" checked /> Keyword</label>
+            <label><input type="radio" name="searchMode" value="semantic" /> Semantic</label>
+          </div>
+          <label for="searchQuery" class="small">Query</label>
+          <input id="searchQuery" type="text" placeholder="e.g. Python concurrency or embedding models" />
+          <button id="searchBtn" type="button" style="margin-top:0.5rem">Search</button>
+          <div id="pill-list"></div>
+        </section>
+      </div>
+    </div>
+
+    <section id="section-detail" class="card">
+      <h2>3. Pill detail</h2>
+      <div id="pill-detail" class="small">Select a pill from the search results to view and edit.</div>
+    </section>
+  </div>
+
+  <script>
+    const apiBase = '';
+
+    function showToast(msg, ok) {
+      const el = document.getElementById('toast');
+      el.textContent = msg;
+      el.className = 'show ' + (ok ? 'ok' : 'err');
+      el.style.display = 'block';
+      clearTimeout(showToast._t);
+      showToast._t = setTimeout(() => { el.style.display = 'none'; }, 4500);
+    }
+
+    async function refreshStats() {
+      const bar = document.getElementById('statsBar');
+      try {
+        const s = await getJSON('/stats');
+        bar.textContent = 'Active pills: ' + s.active_pills + ' · With graph links: ' + s.pills_with_relations;
+      } catch (e) {
+        bar.textContent = 'Stats unavailable';
+      }
+    }
+    refreshStats();
+
+    const transcriptEl = document.getElementById('transcript');
+    const sourceRefEl = document.getElementById('sourceRef');
+    const saveBtn = document.getElementById('saveBtn');
+    const resultEl = document.getElementById('result');
+    const searchQueryEl = document.getElementById('searchQuery');
+    const searchBtn = document.getElementById('searchBtn');
+    const pillListEl = document.getElementById('pill-list');
+    const pillDetailEl = document.getElementById('pill-detail');
+
+    let currentRelations = [];
+
+    async function postJSON(path, body) {
+      const res = await fetch(apiBase + path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const text = await res.text();
+      try {
+        const data = text ? JSON.parse(text) : {};
+        if (!res.ok) throw new Error(data.detail || data.error?.message || text || res.statusText);
+        return data;
+      } catch (e) {
+        throw new Error(e.message || ('HTTP ' + res.status));
+      }
+    }
+
+    async function getJSON(path) {
+      const res = await fetch(apiBase + path);
+      const text = await res.text();
+      const data = text ? JSON.parse(text) : {};
+      if (!res.ok) throw new Error(data.detail || data.error?.message || text || res.statusText);
+      return data;
+    }
+
+    async function patchJSON(path, body) {
+      const res = await fetch(apiBase + path, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const text = await res.text();
+      const data = text ? JSON.parse(text) : {};
+      if (!res.ok) throw new Error(data.detail || data.error?.message || text || res.statusText);
+      return data;
+    }
+
+    async function deleteJSON(path) {
+      const res = await fetch(apiBase + path, { method: 'DELETE' });
+      const text = await res.text();
+      const data = text ? JSON.parse(text) : {};
+      if (!res.ok) throw new Error(data.detail || data.error?.message || text || res.statusText);
+      return data;
+    }
+
+    function getSearchMode() {
+      const r = document.querySelector('input[name="searchMode"]:checked');
+      return r ? r.value : 'keyword';
+    }
+
+    saveBtn.addEventListener('click', async () => {
+      const transcript = transcriptEl.value.trim();
+      if (!transcript) {
+        resultEl.textContent = 'Please paste a transcript first.';
+        return;
+      }
+      saveBtn.disabled = true;
+      resultEl.textContent = 'Distilling and saving...';
+      try {
+        const data = await postJSON('/pills/ingest-conversation', {
+          transcript,
+          source_reference: sourceRefEl.value.trim() || 'web-app',
+        });
+        const inserted = data.inserted || [];
+        const skippedDup = data.skipped_duplicate || [];
+        const st = data.stats || {};
+        let lines = [
+          'Saved ' + inserted.length + ' pill(s): ' + (inserted.join(', ') || '(none)'),
+        ];
+        if (st.summary_length != null) {
+          lines.push('Summary length: ' + st.summary_length + (st.excerpt_used ? ' (transcript excerpt used)' : ''));
+        }
+        if (skippedDup.length) {
+          lines.push('Skipped as duplicates:');
+          skippedDup.forEach((d) => {
+            const t = typeof d === 'string' ? d : (d.title || '?');
+            const sim = d.similar_to ? ' (similar to: ' + d.similar_to + ')' : '';
+            const sid = d.similar_pill_id ? ' [existing id: ' + d.similar_pill_id + ']' : '';
+            lines.push('  - ' + t + sim + sid);
+          });
+        }
+        resultEl.textContent = lines.join('\n');
+        showToast('Ingest finished: ' + inserted.length + ' saved', true);
+        refreshStats();
+      } catch (e) {
+        resultEl.textContent = 'Error: ' + e.message;
+        showToast(e.message, false);
+      } finally {
+        saveBtn.disabled = false;
+      }
+    });
+
+    let currentResults = [];
+
+    searchBtn.addEventListener('click', async () => {
+      const q = searchQueryEl.value.trim();
+      pillListEl.textContent = 'Searching...';
+      pillDetailEl.textContent = 'Select a pill from the search results to view and edit.';
+      try {
+        const mode = getSearchMode();
+        let data;
+        if (mode === 'semantic') {
+          if (!q) {
+            pillListEl.textContent = 'Enter a query for semantic search.';
+            return;
+          }
+          data = await getJSON('/pills/semantic?q=' + encodeURIComponent(q) + '&limit=25');
+        } else {
+          data = await getJSON('/pills/search' + (q ? '?q=' + encodeURIComponent(q) : ''));
+        }
+        currentResults = data.pills || [];
+        if (!currentResults.length) {
+          pillListEl.textContent = 'No pills found.';
+          return;
+        }
+        pillListEl.innerHTML = '';
+        currentResults.forEach((p) => {
+          const div = document.createElement('div');
+          div.className = 'pill-item';
+          div.dataset.id = p._id;
+          const sim = p.similarity != null ? ' · sim ' + p.similarity : '';
+          div.innerHTML =
+            '<div class="pill-item-title"></div><div class="pill-item-meta"></div>';
+          div.querySelector('.pill-item-title').textContent = p.title || '(no title)';
+          div.querySelector('.pill-item-meta').textContent =
+            (p.category || 'uncategorized') + sim +
+            (p.status && p.status !== 'active' ? ' · ' + p.status : '');
+          div.addEventListener('click', () => loadPill(p._id));
+          pillListEl.appendChild(div);
+        });
+      } catch (e) {
+        pillListEl.textContent = 'Error: ' + e.message;
+      }
+    });
+
+    async function loadPill(id) {
+      pillDetailEl.textContent = 'Loading pill...';
+      try {
+        const [p, neigh] = await Promise.all([
+          getJSON('/pills/' + encodeURIComponent(id)),
+          getJSON('/pills/' + encodeURIComponent(id) + '/neighbors').catch(() => null),
+        ]);
+        currentRelations = (p.relations || []).map((r) => ({
+          target_id: r.target_id,
+          kind: r.kind || 'related',
+        }));
+        renderPillDetail(p, neigh);
+      } catch (e) {
+        pillDetailEl.textContent = 'Error: ' + e.message;
+      }
+    }
+
+    function renderPillDetail(pill, neigh) {
+      pillDetailEl.innerHTML = '';
+      const container = document.createElement('div');
+
+      const titleL = document.createElement('label');
+      titleL.textContent = 'Title';
+      const titleIn = document.createElement('input');
+      titleIn.id = 'pillTitle';
+      titleIn.type = 'text';
+      titleIn.value = pill.title || '';
+      const titleWrap = document.createElement('div');
+      titleWrap.className = 'pill-detail-field';
+      titleWrap.appendChild(titleL);
+      titleWrap.appendChild(titleIn);
+
+      const contentL = document.createElement('label');
+      contentL.textContent = 'Content';
+      const contentTa = document.createElement('textarea');
+      contentTa.id = 'pillContent';
+      contentTa.rows = 6;
+      contentTa.value = pill.content || '';
+      const contentWrap = document.createElement('div');
+      contentWrap.className = 'pill-detail-field';
+      contentWrap.appendChild(contentL);
+      contentWrap.appendChild(contentTa);
+
+      const catL = document.createElement('label');
+      catL.textContent = 'Category';
+      const catIn = document.createElement('input');
+      catIn.id = 'pillCategory';
+      catIn.type = 'text';
+      catIn.value = pill.category || '';
+      const catWrap = document.createElement('div');
+      catWrap.className = 'pill-detail-field';
+      catWrap.appendChild(catL);
+      catWrap.appendChild(catIn);
+
+      const tagsL = document.createElement('label');
+      tagsL.textContent = 'Tags (comma-separated)';
+      const tagsIn = document.createElement('input');
+      tagsIn.id = 'pillTags';
+      tagsIn.type = 'text';
+      tagsIn.value = (pill.tags || []).join(', ');
+      const tagsWrap = document.createElement('div');
+      tagsWrap.className = 'pill-detail-field';
+      tagsWrap.appendChild(tagsL);
+      tagsWrap.appendChild(tagsIn);
+
+      const statL = document.createElement('label');
+      statL.textContent = 'Status';
+      const statSel = document.createElement('select');
+      statSel.id = 'pillStatus';
+      ['active', 'archived', 'deprecated'].forEach((s) => {
+        const o = document.createElement('option');
+        o.value = s;
+        o.textContent = s;
+        if (pill.status === s) o.selected = true;
+        statSel.appendChild(o);
+      });
+      const statWrap = document.createElement('div');
+      statWrap.className = 'pill-detail-field';
+      statWrap.appendChild(statL);
+      statWrap.appendChild(statSel);
+
+      container.appendChild(titleWrap);
+      container.appendChild(contentWrap);
+      container.appendChild(catWrap);
+      container.appendChild(tagsWrap);
+      container.appendChild(statWrap);
+
+      const relSection = document.createElement('div');
+      relSection.className = 'pill-detail-field';
+      const relH = document.createElement('label');
+      relH.textContent = 'Graph links (outgoing)';
+      relSection.appendChild(relH);
+
+      const relTableWrap = document.createElement('div');
+      relTableWrap.id = 'relTableWrap';
+      relSection.appendChild(relTableWrap);
+
+      function renderRelTable() {
+        relTableWrap.innerHTML = '';
+        if (!currentRelations.length) {
+          const p = document.createElement('p');
+          p.className = 'small';
+          p.textContent = 'No outgoing links. Add by ID or pick from search below.';
+          relTableWrap.appendChild(p);
+          return;
+        }
+        const table = document.createElement('table');
+        table.className = 'rel-table';
+        table.innerHTML = '<thead><tr><th>Target pill ID</th><th>Kind</th><th></th></tr></thead>';
+        const tb = document.createElement('tbody');
+        currentRelations.forEach((rel, idx) => {
+          const tr = document.createElement('tr');
+          const tdId = document.createElement('td');
+          tdId.textContent = rel.target_id;
+          const tdKind = document.createElement('td');
+          const sel = document.createElement('select');
+          ['related', 'supersedes', 'same_topic'].forEach((k) => {
+            const o = document.createElement('option');
+            o.value = k;
+            o.textContent = k;
+            if (rel.kind === k) o.selected = true;
+            sel.appendChild(o);
+          });
+          sel.addEventListener('change', () => {
+            currentRelations[idx].kind = sel.value;
+          });
+          tdKind.appendChild(sel);
+          const tdRm = document.createElement('td');
+          const rm = document.createElement('button');
+          rm.type = 'button';
+          rm.className = 'secondary';
+          rm.textContent = 'Remove';
+          rm.addEventListener('click', () => {
+            currentRelations.splice(idx, 1);
+            renderRelTable();
+          });
+          tdRm.appendChild(rm);
+          tr.appendChild(tdId);
+          tr.appendChild(tdKind);
+          tr.appendChild(tdRm);
+          tb.appendChild(tr);
+        });
+        table.appendChild(tb);
+        relTableWrap.appendChild(table);
+      }
+      renderRelTable();
+
+      const addRow = document.createElement('div');
+      addRow.style.marginTop = '0.5rem';
+      const manualId = document.createElement('input');
+      manualId.type = 'text';
+      manualId.placeholder = 'Target ObjectId (24 hex)';
+      manualId.style.marginRight = '0.5rem';
+      manualId.style.width = 'auto';
+      manualId.style.minWidth = '220px';
+      const addBtn = document.createElement('button');
+      addBtn.type = 'button';
+      addBtn.className = 'secondary';
+      addBtn.textContent = 'Add link by ID';
+      addBtn.addEventListener('click', () => {
+        const tid = manualId.value.trim();
+        if (!tid || tid === pill._id) return;
+        if (currentRelations.some((r) => r.target_id === tid)) return;
+        currentRelations.push({ target_id: tid, kind: 'related' });
+        manualId.value = '';
+        renderRelTable();
+      });
+      addRow.appendChild(manualId);
+      addRow.appendChild(addBtn);
+      relSection.appendChild(addRow);
+
+      const picker = document.createElement('div');
+      picker.className = 'link-picker';
+      const pickLabel = document.createElement('div');
+      pickLabel.className = 'small';
+      pickLabel.textContent = 'Pick from search (uses query from Search panel)';
+      const pickBtn = document.createElement('button');
+      pickBtn.type = 'button';
+      pickBtn.className = 'secondary';
+      pickBtn.textContent = 'Load candidates from keyword search';
+      const pickList = document.createElement('div');
+      pickBtn.addEventListener('click', async () => {
+        pickList.innerHTML = 'Loading…';
+        try {
+          const q = searchQueryEl.value.trim();
+          const path = '/pills/search' + (q ? '?q=' + encodeURIComponent(q) : '') + '&limit=15';
+          const data = await getJSON(path);
+          const pills = data.pills || [];
+          pickList.innerHTML = '';
+          pills.forEach((p) => {
+            if (p._id === pill._id) return;
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'link-pick-item';
+            b.textContent = (p.title || p._id) + ' · ' + p._id;
+            b.addEventListener('click', () => {
+              if (currentRelations.some((r) => r.target_id === p._id)) return;
+              currentRelations.push({ target_id: p._id, kind: 'related' });
+              renderRelTable();
+              showToast('Link added (save to persist)', true);
+            });
+            pickList.appendChild(b);
+          });
+          if (!pickList.children.length) pickList.textContent = 'No candidates.';
+        } catch (e) {
+          pickList.textContent = 'Error: ' + e.message;
+        }
+      });
+      picker.appendChild(pickLabel);
+      picker.appendChild(pickBtn);
+      picker.appendChild(pickList);
+      relSection.appendChild(picker);
+
+      container.appendChild(relSection);
+
+      if (neigh && ((neigh.outgoing && neigh.outgoing.length) || (neigh.incoming && neigh.incoming.length))) {
+        const navDiv = document.createElement('div');
+        navDiv.className = 'pill-detail-field';
+        const nl = document.createElement('label');
+        nl.textContent = 'Related pills (read-only 1-hop view)';
+        navDiv.appendChild(nl);
+        const ul = document.createElement('ul');
+        ul.style.margin = '0.25rem 0 0 1rem';
+        (neigh.outgoing || []).forEach((row) => {
+          const li = document.createElement('li');
+          const a = document.createElement('a');
+          a.href = '#';
+          a.style.color = 'var(--accent)';
+          a.textContent = (row.title || row._id) + ' → (' + (row.edge_kind || 'related') + ')';
+          a.addEventListener('click', (ev) => {
+            ev.preventDefault();
+            loadPill(row._id);
+          });
+          li.appendChild(a);
+          ul.appendChild(li);
+        });
+        (neigh.incoming || []).forEach((row) => {
+          const li = document.createElement('li');
+          const a = document.createElement('a');
+          a.href = '#';
+          a.style.color = 'var(--accent)';
+          a.textContent = '← ' + (row.title || row._id) + ' (' + (row.edge_kind || 'related') + ')';
+          a.addEventListener('click', (ev) => {
+            ev.preventDefault();
+            loadPill(row._id);
+          });
+          li.appendChild(a);
+          ul.appendChild(li);
+        });
+        navDiv.appendChild(ul);
+        container.appendChild(navDiv);
+      }
+
+      const actions = document.createElement('div');
+      actions.className = 'pill-detail-actions';
+      const saveDetailBtn = document.createElement('button');
+      saveDetailBtn.type = 'button';
+      saveDetailBtn.textContent = 'Save changes';
+      const archiveBtn = document.createElement('button');
+      archiveBtn.type = 'button';
+      archiveBtn.className = 'danger';
+      archiveBtn.textContent = 'Archive pill';
+      actions.appendChild(saveDetailBtn);
+      actions.appendChild(archiveBtn);
+      container.appendChild(actions);
+
+      const meta = document.createElement('div');
+      meta.className = 'small';
+      meta.style.marginTop = '0.5rem';
+      meta.textContent =
+        'ID: ' +
+        pill._id +
+        (pill.source && pill.source.reference ? ' · Source: ' + pill.source.reference : '');
+      container.appendChild(meta);
+
+      pillDetailEl.appendChild(container);
+
+      saveDetailBtn.addEventListener('click', async () => {
+        saveDetailBtn.disabled = true;
+        try {
+          const relPayload = currentRelations.map((r) => ({
+            target_id: r.target_id,
+            kind: r.kind,
+          }));
+          const updated = await patchJSON('/pills/' + encodeURIComponent(pill._id), {
+            title: document.getElementById('pillTitle').value,
+            content: document.getElementById('pillContent').value,
+            category: document.getElementById('pillCategory').value,
+            tags: document
+              .getElementById('pillTags')
+              .value.split(',')
+              .map((t) => t.trim())
+              .filter(Boolean),
+            status: document.getElementById('pillStatus').value,
+            relations: relPayload,
+          });
+          currentRelations = (updated.relations || []).map((r) => ({
+            target_id: r.target_id,
+            kind: r.kind || 'related',
+          }));
+          const n = await getJSON('/pills/' + encodeURIComponent(updated._id) + '/neighbors').catch(() => null);
+          renderPillDetail(updated, n);
+          showToast('Pill saved', true);
+          refreshStats();
+        } catch (e) {
+          alert('Error saving pill: ' + e.message);
+          showToast(e.message, false);
+        } finally {
+          saveDetailBtn.disabled = false;
+        }
+      });
+
+      archiveBtn.addEventListener('click', async () => {
+        if (!confirm('Archive this pill?')) return;
+        archiveBtn.disabled = true;
+        try {
+          await deleteJSON('/pills/' + encodeURIComponent(pill._id));
+          pillDetailEl.textContent = 'Pill archived.';
+          showToast('Pill archived', true);
+          refreshStats();
+        } catch (e) {
+          alert('Error archiving pill: ' + e.message);
+        } finally {
+          archiveBtn.disabled = false;
+        }
+      });
+    }
+  </script>
+</body>
+</html>

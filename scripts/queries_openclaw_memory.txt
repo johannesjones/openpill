@@ -1,0 +1,28 @@
+# OpenClaw integration + memory quality
+OpenClaw memory architecture limitations
+OpenClaw markdown memory vs semantic retrieval
+when to use MCP vs REST for memory layer
+should we fork OpenClaw or integrate external memory
+
+# Three-layer memory model
+Ebene 1 was wird langfristig gespeichert
+Ebene 2 wann wird semantisch abgerufen
+Ebene 3 konsistenz widersprüche veraltete erinnerungen
+
+# Consistency + graph traversal
+conflicting memories detection and resolution
+conflicts_with relation meaning and usage
+janitor contradiction consolidation workflow
+watchdog and janitor responsibilities
+supersedes relation for versioned facts
+
+# Retrieval depth
+1 hop vs 2 hop neighbor expansion tradeoffs
+max_hops and max_nodes retrieval guardrails
+graph neighbor path explanation via_root_pill_id
+
+# API + operations
+idempotency key ingest retries same body
+KNOWLEDGE_PILL_API_KEY authorization bearer x-api-key
+structured request logging duration request id
+openapi contract snapshot and required paths
