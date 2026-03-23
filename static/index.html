@@ -138,6 +138,17 @@
     .pill-detail-actions { margin-top: 0.75rem; display: flex; flex-wrap: wrap; gap: 0.5rem; }
     .status-archived { color: #f7931a; font-weight: 600; }
     .search-mode { display: flex; gap: 1rem; align-items: center; margin-bottom: 0.5rem; flex-wrap: wrap; }
+    .inline-row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+    .inline-row > * { flex: 1 1 120px; }
+    .inline-row button { flex: 0 0 auto; }
+    .semantic-options {
+      margin-top: 0.6rem;
+      padding: 0.6rem;
+      border-radius: 8px;
+      background: var(--bg);
+      border: 1px solid var(--surface2);
+    }
+    .semantic-options label { font-size: 0.8rem; color: var(--muted); }
     .rel-table { width: 100%; font-size: 0.85rem; border-collapse: collapse; }
     .rel-table th, .rel-table td { padding: 0.35rem 0.5rem; text-align: left; border-bottom: 1px solid var(--surface2); }
     .link-picker { margin-top: 0.5rem; padding: 0.5rem; background: var(--bg); border-radius: 8px; }
@@ -154,12 +165,24 @@
     <p class="small">Distill chats into memory, search by keyword or meaning, edit pills and graph links.</p>
 
     <nav class="section-nav" aria-label="Sections">
+      <a href="#section-settings">0. Settings</a>
       <a href="#section-save">1. Save chat</a>
       <a href="#section-search">2. Search</a>
       <a href="#section-detail">3. Pill detail</a>
     </nav>
 
     <div id="toast" role="status"></div>
+
+    <section id="section-settings" class="card">
+      <h2>0. API settings</h2>
+      <p class="small">Optional for remote use. Leave empty for same-origin local API.</p>
+      <div class="inline-row">
+        <input id="apiBaseInput" type="text" placeholder="API base URL (e.g. http://localhost:8080)" />
+        <input id="apiKeyInput" type="text" placeholder="API key (optional)" />
+        <button id="saveSettingsBtn" type="button" class="secondary">Save settings</button>
+        <button id="healthBtn" type="button" class="secondary">Test health</button>
+      </div>
+    </section>
 
     <div class="row">
       <div class="col">
@@ -186,6 +209,23 @@
           <label for="searchQuery" class="small">Query</label>
           <input id="searchQuery" type="text" placeholder="e.g. Python concurrency or embedding models" />
           <button id="searchBtn" type="button" style="margin-top:0.5rem">Search</button>
+          <div id="semanticOptions" class="semantic-options" style="display:none">
+            <div class="inline-row">
+              <label style="flex: 1 1 180px;"><input id="expandNeighbors" type="checkbox" /> Expand neighbors</label>
+              <div>
+                <label for="neighborLimit">Neighbor limit</label>
+                <input id="neighborLimit" type="text" value="10" />
+              </div>
+              <div>
+                <label for="maxHops">Max hops (1-2)</label>
+                <input id="maxHops" type="text" value="1" />
+              </div>
+              <div>
+                <label for="maxNodes">Max nodes (5-100)</label>
+                <input id="maxNodes" type="text" value="30" />
+              </div>
+            </div>
+          </div>
           <div id="pill-list"></div>
         </section>
       </div>
@@ -198,7 +238,8 @@
   </div>
 
   <script>
-    const apiBase = '';
+    let apiBase = localStorage.getItem('openpill_api_base') || '';
+    let apiKey = localStorage.getItem('openpill_api_key') || '';
 
     function showToast(msg, ok) {
       const el = document.getElementById('toast');
@@ -228,13 +269,72 @@
     const searchBtn = document.getElementById('searchBtn');
     const pillListEl = document.getElementById('pill-list');
     const pillDetailEl = document.getElementById('pill-detail');
+    const apiBaseInput = document.getElementById('apiBaseInput');
+    const apiKeyInput = document.getElementById('apiKeyInput');
+    const saveSettingsBtn = document.getElementById('saveSettingsBtn');
+    const healthBtn = document.getElementById('healthBtn');
+    const semanticOptionsEl = document.getElementById('semanticOptions');
+    const expandNeighborsEl = document.getElementById('expandNeighbors');
+    const neighborLimitEl = document.getElementById('neighborLimit');
+    const maxHopsEl = document.getElementById('maxHops');
+    const maxNodesEl = document.getElementById('maxNodes');
+
+    apiBaseInput.value = apiBase;
+    apiKeyInput.value = apiKey;
+
+    function normalizeBase(base) {
+      return (base || '').trim().replace(/\/+$/, '');
+    }
+
+    function buildUrl(path) {
+      const cleanPath = path.startsWith('/') ? path : '/' + path;
+      return normalizeBase(apiBase) + cleanPath;
+    }
+
+    function authHeaders(extra) {
+      const headers = extra ? { ...extra } : {};
+      if (apiKey && apiKey.trim()) {
+        headers['Authorization'] = 'Bearer ' + apiKey.trim();
+      }
+      return headers;
+    }
+
+    function updateSemanticOptionsVisibility() {
+      semanticOptionsEl.style.display = getSearchMode() === 'semantic' ? 'block' : 'none';
+    }
+
+    document.querySelectorAll('input[name="searchMode"]').forEach((r) => {
+      r.addEventListener('change', updateSemanticOptionsVisibility);
+    });
+    updateSemanticOptionsVisibility();
+
+    saveSettingsBtn.addEventListener('click', () => {
+      apiBase = normalizeBase(apiBaseInput.value);
+      apiKey = apiKeyInput.value.trim();
+      localStorage.setItem('openpill_api_base', apiBase);
+      localStorage.setItem('openpill_api_key', apiKey);
+      showToast('Settings saved', true);
+      refreshStats();
+    });
+
+    healthBtn.addEventListener('click', async () => {
+      healthBtn.disabled = true;
+      try {
+        const h = await getJSON('/health');
+        showToast('Health OK: ' + (h.status || 'ok'), true);
+      } catch (e) {
+        showToast('Health failed: ' + e.message, false);
+      } finally {
+        healthBtn.disabled = false;
+      }
+    });
 
     let currentRelations = [];
 
     async function postJSON(path, body) {
-      const res = await fetch(apiBase + path, {
+      const res = await fetch(buildUrl(path), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(body),
       });
       const text = await res.text();
@@ -248,7 +348,7 @@
     }
 
     async function getJSON(path) {
-      const res = await fetch(apiBase + path);
+      const res = await fetch(buildUrl(path), { headers: authHeaders() });
       const text = await res.text();
       const data = text ? JSON.parse(text) : {};
       if (!res.ok) throw new Error(data.detail || data.error?.message || text || res.statusText);
@@ -256,9 +356,9 @@
     }
 
     async function patchJSON(path, body) {
-      const res = await fetch(apiBase + path, {
+      const res = await fetch(buildUrl(path), {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(body),
       });
       const text = await res.text();
@@ -268,7 +368,7 @@
     }
 
     async function deleteJSON(path) {
-      const res = await fetch(apiBase + path, { method: 'DELETE' });
+      const res = await fetch(buildUrl(path), { method: 'DELETE', headers: authHeaders() });
       const text = await res.text();
       const data = text ? JSON.parse(text) : {};
       if (!res.ok) throw new Error(data.detail || data.error?.message || text || res.statusText);
@@ -336,7 +436,19 @@
             pillListEl.textContent = 'Enter a query for semantic search.';
             return;
           }
-          data = await getJSON('/pills/semantic?q=' + encodeURIComponent(q) + '&limit=25');
+          const expand = expandNeighborsEl.checked ? 'true' : 'false';
+          const nLimit = parseInt(neighborLimitEl.value, 10) || 10;
+          const hops = parseInt(maxHopsEl.value, 10) || 1;
+          const nodes = parseInt(maxNodesEl.value, 10) || 30;
+          const params = new URLSearchParams({
+            q,
+            limit: '25',
+            expand_neighbors: expand,
+            neighbor_limit: String(nLimit),
+            max_hops: String(hops),
+            max_nodes: String(nodes),
+          });
+          data = await getJSON('/pills/semantic?' + params.toString());
         } else {
           data = await getJSON('/pills/search' + (q ? '?q=' + encodeURIComponent(q) : ''));
         }
@@ -351,11 +463,13 @@
           div.className = 'pill-item';
           div.dataset.id = p._id;
           const sim = p.similarity != null ? ' · sim ' + p.similarity : '';
+          const score = p.retrieval_score != null ? ' · score ' + p.retrieval_score : '';
+          const conflicts = p.conflict_count ? ' · conflicts ' + p.conflict_count : '';
           div.innerHTML =
             '<div class="pill-item-title"></div><div class="pill-item-meta"></div>';
           div.querySelector('.pill-item-title').textContent = p.title || '(no title)';
           div.querySelector('.pill-item-meta').textContent =
-            (p.category || 'uncategorized') + sim +
+            (p.category || 'uncategorized') + sim + score + conflicts +
             (p.status && p.status !== 'active' ? ' · ' + p.status : '');
           div.addEventListener('click', () => loadPill(p._id));
           pillListEl.appendChild(div);
