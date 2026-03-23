@@ -42,7 +42,7 @@ Long-Term      MongoDB with vector embeddings + MCP interface
                 <- extractor.py ingests, janitor.py cleans
 ```
 
-**Docs:** `MEMORY.md` is **auto-generated** by `sync_memory.py` (mid-term export)—do not edit by hand. For **research notes and a phased roadmap** (graph memory, RL, future directions), see [`RESEARCH_AND_ROADMAP.md`](RESEARCH_AND_ROADMAP.md). Operations (backup, embeddings, ports): [`docs/OPS.md`](docs/OPS.md). **Integrations** (OpenClaw, MCP, REST, proxy vs MCP): [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md). Public launch prep checklist: [`docs/PUBLIC_READY.md`](docs/PUBLIC_READY.md).
+**Docs:** `MEMORY.md` is **auto-generated** by `sync_memory.py` (mid-term export)—do not edit by hand. For **research notes and a phased roadmap** (graph memory, RL, future directions), see [`RESEARCH_AND_ROADMAP.md`](RESEARCH_AND_ROADMAP.md). Operations (backup, embeddings, ports): [`docs/OPS.md`](docs/OPS.md). **Integrations** (OpenClaw, MCP, REST, proxy vs MCP): [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md). Public launch checklist: [`docs/PUBLIC_READY.md`](docs/PUBLIC_READY.md). Dry-run status tracking: [`docs/PUBLIC_READY_STATUS.md`](docs/PUBLIC_READY_STATUS.md).
 
 ## Tests
 

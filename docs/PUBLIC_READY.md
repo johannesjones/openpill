@@ -2,6 +2,9 @@
 
 Use this checklist before changing the GitHub repository visibility from private to public.
 
+For ongoing tracking (without editing this checklist), use:
+- [`PUBLIC_READY_STATUS.md`](PUBLIC_READY_STATUS.md)
+
 ## Product and naming
 
 - Confirm the product name is finalized as **OpenPill** across README, docs, UI, and config examples.
