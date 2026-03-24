@@ -40,7 +40,6 @@ import re
 import sys
 from dataclasses import dataclass
 
-from litellm import acompletion
 from pydantic import BaseModel, Field, ValidationError
 
 from db import close, get_collection
@@ -360,6 +359,8 @@ async def extract_facts(
         {"role": "user", "content": text},
     ]
     for attempt in range(2):
+        from litellm import acompletion
+
         response = await acompletion(
             model=model or MODEL,
             messages=messages,
@@ -401,6 +402,8 @@ Return a plain-text summary (no markdown), between {lo} and {hi} characters.\
 
 async def summarize_transcript(transcript: str, *, model: str | None = None) -> str:
     """Summarize a conversation transcript into a compact description."""
+    from litellm import acompletion
+
     response = await acompletion(
         model=model or MODEL,
         messages=[

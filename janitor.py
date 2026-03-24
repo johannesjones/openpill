@@ -40,7 +40,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from bson import ObjectId
-from litellm import acompletion
 from pydantic import BaseModel, Field
 
 from db import close, get_collection
@@ -214,6 +213,8 @@ def _resolve_model_for_task(*, task_name: str, group_size: int) -> ModelDecision
 
 
 async def _llm_call(system: str, user: str, *, model: str | None = None) -> str:
+    from litellm import acompletion
+
     response = await acompletion(
         model=model or MODEL,
         messages=[
