@@ -17,12 +17,20 @@ def test_stats_requires_api_key_when_configured(monkeypatch):
 
     from fastapi.testclient import TestClient
 
+    col = MagicMock()
+    col.count_documents = AsyncMock(side_effect=[1, 0])
+
+    async def fake_col():
+        return col
+
+    monkeypatch.setattr(api_module, "get_collection", fake_col)
+
     client = TestClient(api_module.app)
     r = client.get("/stats")
     assert r.status_code == 401
 
     r2 = client.get("/stats", headers={"Authorization": "Bearer secret-test-key"})
-    assert r2.status_code != 401
+    assert r2.status_code == 200
 
     importlib.reload(api_module)
     monkeypatch.delenv("KNOWLEDGE_PILL_API_KEY", raising=False)
