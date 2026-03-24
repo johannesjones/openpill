@@ -34,6 +34,7 @@ from db import close, get_collection
 from embeddings import cosine_similarity, embed_text_for_pill, get_embedding
 from models import KnowledgePill, PillRelation, PillSource, PillStatus, SourceType
 from pill_relations import expand_semantic_neighbors_hops, neighbors_for_pill
+from topics import build_topic_snapshot
 
 logger = logging.getLogger("openpill.api")
 
@@ -616,6 +617,22 @@ async def list_categories():
     col = await get_collection()
     categories = await col.distinct("category", {"status": "active"})
     return {"categories": sorted(categories)}
+
+
+@app.get("/topics/snapshot")
+async def topics_snapshot(
+    top_terms: int = Query(default=20, ge=1, le=100),
+    per_category: int = Query(default=10, ge=1, le=50),
+    min_doc_freq: int = Query(default=2, ge=1, le=20),
+    min_token_len: int = Query(default=3, ge=2, le=20),
+):
+    """Classical NLP topic overview over active pills (read-only analytics)."""
+    return await build_topic_snapshot(
+        top_terms=top_terms,
+        per_category=per_category,
+        min_doc_freq=min_doc_freq,
+        min_token_len=min_token_len,
+    )
 
 
 @app.delete("/pills/{pill_id}/consolidation")

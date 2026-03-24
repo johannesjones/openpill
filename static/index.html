@@ -170,6 +170,7 @@
       <a href="#section-save">1. Save chat</a>
       <a href="#section-search">2. Search</a>
       <a href="#section-detail">3. Pill detail</a>
+      <a href="#section-topics">4. Topic snapshot</a>
     </nav>
 
     <div id="toast" role="status"></div>
@@ -238,6 +239,31 @@
       <h2>3. Pill detail</h2>
       <div id="pill-detail" class="small">Select a pill from the search results to view and edit.</div>
     </section>
+
+    <section id="section-topics" class="card">
+      <h2>4. Topic snapshot</h2>
+      <p class="small">Classical NLP overview from active memory entries (TF/DF heuristics).</p>
+      <div class="inline-row">
+        <div>
+          <label class="small" for="topicTopTerms">Top terms</label>
+          <input id="topicTopTerms" type="text" value="20" />
+        </div>
+        <div>
+          <label class="small" for="topicPerCategory">Per category</label>
+          <input id="topicPerCategory" type="text" value="10" />
+        </div>
+        <div>
+          <label class="small" for="topicMinDocFreq">Min doc freq</label>
+          <input id="topicMinDocFreq" type="text" value="2" />
+        </div>
+        <div>
+          <label class="small" for="topicMinTokenLen">Min token len</label>
+          <input id="topicMinTokenLen" type="text" value="3" />
+        </div>
+        <button id="topicSnapshotBtn" type="button">Generate snapshot</button>
+      </div>
+      <div id="topicSnapshotResult"></div>
+    </section>
   </div>
 
   <script>
@@ -283,6 +309,12 @@
     const neighborLimitEl = document.getElementById('neighborLimit');
     const maxHopsEl = document.getElementById('maxHops');
     const maxNodesEl = document.getElementById('maxNodes');
+    const topicTopTermsEl = document.getElementById('topicTopTerms');
+    const topicPerCategoryEl = document.getElementById('topicPerCategory');
+    const topicMinDocFreqEl = document.getElementById('topicMinDocFreq');
+    const topicMinTokenLenEl = document.getElementById('topicMinTokenLen');
+    const topicSnapshotBtn = document.getElementById('topicSnapshotBtn');
+    const topicSnapshotResultEl = document.getElementById('topicSnapshotResult');
 
     apiBaseInput.value = apiBase;
     apiKeyInput.value = apiKey;
@@ -510,6 +542,33 @@
         });
       } catch (e) {
         pillListEl.textContent = 'Error: ' + e.message;
+      }
+    });
+
+    topicSnapshotBtn.addEventListener('click', async () => {
+      topicSnapshotBtn.disabled = true;
+      topicSnapshotResultEl.textContent = 'Generating topic snapshot...';
+      try {
+        const topTerms = toIntWithBounds(topicTopTermsEl.value, 20, 1, 100);
+        const perCategory = toIntWithBounds(topicPerCategoryEl.value, 10, 1, 50);
+        const minDf = toIntWithBounds(topicMinDocFreqEl.value, 2, 1, 20);
+        const minLen = toIntWithBounds(topicMinTokenLenEl.value, 3, 2, 20);
+        topicTopTermsEl.value = String(topTerms);
+        topicPerCategoryEl.value = String(perCategory);
+        topicMinDocFreqEl.value = String(minDf);
+        topicMinTokenLenEl.value = String(minLen);
+        const params = new URLSearchParams({
+          top_terms: String(topTerms),
+          per_category: String(perCategory),
+          min_doc_freq: String(minDf),
+          min_token_len: String(minLen),
+        });
+        const data = await getJSON('/topics/snapshot?' + params.toString());
+        topicSnapshotResultEl.textContent = JSON.stringify(data, null, 2);
+      } catch (e) {
+        topicSnapshotResultEl.textContent = 'Error: ' + e.message;
+      } finally {
+        topicSnapshotBtn.disabled = false;
       }
     });
 

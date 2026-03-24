@@ -309,6 +309,15 @@ python sync_memory.py -o ~/.cursor/rules/knowledge.md       # custom path
 python sync_memory.py -c python,architecture -n 100         # filter + limit
 ```
 
+### Topic Snapshot (`scripts/topic_snapshot.py`)
+
+Classical NLP helper to generate a cheap/explainable topic overview from active pills.
+
+```bash
+python scripts/topic_snapshot.py
+python scripts/topic_snapshot.py --top-terms 15 --per-category 8
+```
+
 ## Schema
 
 Each document in the `knowledge_pills` collection:
