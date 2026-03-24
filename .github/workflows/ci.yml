@@ -50,8 +50,9 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-      - run: pip install -r requirements.txt
+      - name: Install integration test dependencies
+        run: pip install pytest pytest-asyncio pymongo motor
       - name: Mongo integration tests
         run: |
-          sleep 3
+          sleep 2
           pytest tests/test_mongo_integration.py -v
