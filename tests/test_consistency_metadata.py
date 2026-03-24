@@ -80,10 +80,13 @@ def test_semantic_search_returns_consistency_metadata(monkeypatch):
     client = TestClient(api_module.app)
     r = client.get("/pills/semantic", params={"q": "conflict"})
     assert r.status_code == 200
-    pill = r.json()["pills"][0]
+    body = r.json()
+    pill = body["pills"][0]
     assert "retrieval_score" in pill
     assert pill["conflict_count"] == 1
     assert "consistency_warning" in pill
+    assert "retrieval_metrics" in body
+    assert body["retrieval_metrics"]["hybrid_enabled"] is False
 
 
 def test_get_pill_returns_consistency_metadata(monkeypatch):

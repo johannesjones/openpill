@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from datetime import datetime
 from typing import Optional
 
@@ -24,6 +25,18 @@ from db import get_collection
 from embeddings import cosine_similarity, embed_text_for_pill, get_embedding
 from models import KnowledgePill, PillSource, PillStatus, SourceType
 from pill_relations import expand_semantic_neighbors_hops, neighbors_for_pill
+
+HYBRID_RETRIEVAL_ENABLED = os.getenv("HYBRID_RETRIEVAL_ENABLED", "false").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+HYBRID_VECTOR_WEIGHT = float(os.getenv("HYBRID_VECTOR_WEIGHT", "0.7"))
+HYBRID_LEXICAL_WEIGHT = float(os.getenv("HYBRID_LEXICAL_WEIGHT", "0.3"))
+HYBRID_LEXICAL_LIMIT = int(os.getenv("HYBRID_LEXICAL_LIMIT", "30"))
+HYBRID_LEXICAL_FALLBACK_MIN_VECTOR = int(
+    os.getenv("HYBRID_LEXICAL_FALLBACK_MIN_VECTOR", "3")
+)
 
 mcp = FastMCP(
     "OpenPill",
@@ -315,6 +328,7 @@ async def semantic_search(
     neighbor_limit: int = 10,
     max_hops: int = 1,
     max_nodes: int = 30,
+    hybrid: bool = False,
 ) -> str:
     """Vector search over pills by meaning (primary recall tool for memory).
 
@@ -365,6 +379,44 @@ async def semantic_search(
     if not results:
         return json.dumps({"message": "No pills with embeddings found.", "count": 0})
 
+    lexical_candidates = []
+    fusion_enabled = hybrid or HYBRID_RETRIEVAL_ENABLED
+    lexical_fallback_used = fusion_enabled and (
+        len(candidates) < HYBRID_LEXICAL_FALLBACK_MIN_VECTOR
+    )
+    if lexical_fallback_used:
+        lex_filter = {"status": "active", "$text": {"$search": query}}
+        if category:
+            lex_filter["category"] = category
+        lex_cursor = (
+            col.find(lex_filter, {"embedding": 0, "score": {"$meta": "textScore"}})
+            .sort([("score", {"$meta": "textScore"})])
+            .limit(max(limit * 2, HYBRID_LEXICAL_LIMIT))
+        )
+        async for doc in lex_cursor:
+            doc["_id"] = str(doc["_id"])
+            for key in ("created_at", "updated_at", "expires_at"):
+                if isinstance(doc.get(key), datetime):
+                    doc[key] = doc[key].isoformat()
+            doc["lexical_score"] = round(float(doc.get("score", 0.0)), 4)
+            lexical_candidates.append(doc)
+        if lexical_candidates:
+            max_lex = max((float(d.get("lexical_score", 0.0)) for d in lexical_candidates), default=1.0) or 1.0
+            merged = {d["_id"]: d for d in results}
+            for row in lexical_candidates:
+                rid = row["_id"]
+                if rid not in merged:
+                    row["similarity"] = 0.0
+                    merged[rid] = row
+                lex_norm = float(row.get("lexical_score", 0.0)) / max_lex
+                merged[rid]["hybrid_score"] = round(
+                    HYBRID_VECTOR_WEIGHT * float(merged[rid].get("similarity", 0.0))
+                    + HYBRID_LEXICAL_WEIGHT * lex_norm,
+                    4,
+                )
+            results = list(merged.values())
+            results.sort(key=lambda d: d.get("hybrid_score", d.get("similarity", 0.0)), reverse=True)
+
     if expand_neighbors and neighbor_limit > 0:
         results = await expand_semantic_neighbors_hops(
             col,
@@ -374,7 +426,19 @@ async def semantic_search(
             max_nodes=max_nodes,
         )
 
-    return json.dumps({"count": len(results), "pills": results}, ensure_ascii=False)
+    return json.dumps(
+        {
+            "count": len(results),
+            "pills": results,
+            "retrieval_metrics": {
+                "hybrid_enabled": fusion_enabled,
+                "lexical_fallback_used": lexical_fallback_used,
+                "vector_candidates": len(candidates),
+                "lexical_candidates": len(lexical_candidates),
+            },
+        },
+        ensure_ascii=False,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -40,4 +40,4 @@ def test_openapi_stable_hash_snapshot():
     canonical = json.dumps(schema, sort_keys=True, separators=(",", ":"))
     digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     # Bump when you change routes, schemas, or metadata in api.py on purpose.
-    assert digest == "d315bf42d14a91f6558e8eba81f70a9eab12bd22cf4439238575ae1edbea369d"
+    assert digest == "34491e3f3c052d4e0f54cc33816de27d9f218c754e9b2c7f97feb47fe8c146ce"

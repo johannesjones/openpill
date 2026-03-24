@@ -1,0 +1,22 @@
+---
+description: Documentation consistency for README and docs
+globs: "{README.md,docs/**/*.md}"
+alwaysApply: false
+---
+
+# OpenPill Docs Consistency
+
+- Keep docs aligned with runtime behavior:
+  - New env vars must be documented with safe defaults.
+  - If behavior changes, update affected docs in the same change.
+- Preserve naming consistency:
+  - Use "OpenPill" as product name in user-facing docs.
+  - Mention legacy names only when explaining compatibility/fallback.
+- For operational sections:
+  - Prefer explicit copy/paste commands.
+  - Mark optional steps clearly.
+- For release readiness docs:
+  - Keep status entries concrete (done/in-progress/blocker), not vague placeholders.
+  - Reflect real validation status (tests/smokes) before changing Go/No-Go language.
+- Keep docs concise and scannable:
+  - Short headings, short bullets, avoid long narrative blocks.

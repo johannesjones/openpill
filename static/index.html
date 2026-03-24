@@ -155,6 +155,17 @@
     .link-picker { margin-top: 0.5rem; padding: 0.5rem; background: var(--bg); border-radius: 8px; }
     .link-pick-item { display: block; width: 100%; text-align: left; margin: 0.2rem 0; padding: 0.35rem; cursor: pointer; border-radius: 6px; border: 1px solid transparent; background: transparent; color: var(--text); font-size: 0.85rem; }
     .link-pick-item:hover { border-color: var(--accent); }
+    .topic-grid { display: grid; gap: 0.75rem; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); margin-top: 0.75rem; }
+    .topic-card { border: 1px solid var(--surface2); border-radius: 8px; padding: 0.7rem; background: var(--bg); }
+    .topic-card h3 { margin: 0 0 0.5rem; font-size: 0.95rem; }
+    .topic-chips { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-bottom: 0.65rem; }
+    .topic-chip { border: 1px solid var(--surface2); border-radius: 999px; padding: 0.2rem 0.5rem; background: var(--surface); color: var(--text); font-size: 0.8rem; cursor: pointer; }
+    .topic-chip:hover { border-color: var(--accent); color: var(--accent); }
+    .topic-bar-row { display: grid; grid-template-columns: 1fr 3fr auto; align-items: center; gap: 0.4rem; margin: 0.2rem 0; }
+    .topic-bar-track { height: 8px; background: var(--surface2); border-radius: 999px; overflow: hidden; }
+    .topic-bar-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--ok)); }
+    .topic-term-btn { background: transparent; color: var(--text); border: none; text-align: left; padding: 0; font-size: 0.82rem; cursor: pointer; }
+    .topic-term-btn:hover { color: var(--accent); text-decoration: underline; }
   </style>
 </head>
 <body>
@@ -214,8 +225,12 @@
           <input id="searchQuery" type="text" placeholder="e.g. Python concurrency or embedding models" />
           <button id="searchBtn" type="button" style="margin-top:0.5rem">Search</button>
           <div id="semanticOptions" class="semantic-options" style="display:none">
+            <p class="small" style="margin-top:0; margin-bottom:0.45rem;">
+              Hybrid search can improve recall for niche wording by adding lexical fallback when semantic hits are sparse.
+            </p>
             <div class="inline-row">
               <label style="flex: 1 1 180px;"><input id="expandNeighbors" type="checkbox" /> Expand neighbors</label>
+              <label style="flex: 1 1 180px;"><input id="hybridSearch" type="checkbox" /> Hybrid fallback</label>
               <div>
                 <label for="neighborLimit">Neighbor limit</label>
                 <input id="neighborLimit" type="text" value="10" />
@@ -309,6 +324,7 @@
     const neighborLimitEl = document.getElementById('neighborLimit');
     const maxHopsEl = document.getElementById('maxHops');
     const maxNodesEl = document.getElementById('maxNodes');
+    const hybridSearchEl = document.getElementById('hybridSearch');
     const topicTopTermsEl = document.getElementById('topicTopTerms');
     const topicPerCategoryEl = document.getElementById('topicPerCategory');
     const topicMinDocFreqEl = document.getElementById('topicMinDocFreq');
@@ -393,6 +409,7 @@
 
 
     let currentRelations = [];
+    let lastTopicSnapshot = null;
 
     async function postJSON(path, body) {
       const res = await fetch(buildUrl(path), {
@@ -513,6 +530,7 @@
             neighbor_limit: String(nLimit),
             max_hops: String(hops),
             max_nodes: String(nodes),
+            hybrid: hybridSearchEl.checked ? 'true' : 'false',
           });
           data = await getJSON('/pills/semantic?' + params.toString());
         } else {
@@ -564,13 +582,109 @@
           min_token_len: String(minLen),
         });
         const data = await getJSON('/topics/snapshot?' + params.toString());
-        topicSnapshotResultEl.textContent = JSON.stringify(data, null, 2);
+        lastTopicSnapshot = data;
+        renderTopicSnapshot(data);
       } catch (e) {
         topicSnapshotResultEl.textContent = 'Error: ' + e.message;
       } finally {
         topicSnapshotBtn.disabled = false;
       }
     });
+
+    function startSemanticSearchFromTopic(term) {
+      if (!term) return;
+      const semanticRadio = document.querySelector('input[name="searchMode"][value="semantic"]');
+      if (semanticRadio) {
+        semanticRadio.checked = true;
+        updateSemanticOptionsVisibility();
+      }
+      searchQueryEl.value = term;
+      searchBtn.click();
+      window.location.hash = '#section-search';
+    }
+
+    function renderTopicSnapshot(snapshot) {
+      if (!snapshot || typeof snapshot !== 'object') {
+        topicSnapshotResultEl.textContent = 'No topic snapshot data.';
+        return;
+      }
+      const topTerms = Array.isArray(snapshot.top_terms) ? snapshot.top_terms : [];
+      const categories = snapshot.by_category || {};
+      const catNames = Object.keys(categories);
+
+      topicSnapshotResultEl.innerHTML = '';
+      const meta = document.createElement('p');
+      meta.className = 'small';
+      meta.textContent =
+        'Active pills: ' + (snapshot.active_pill_count ?? 0) +
+        ' · Top terms: ' + topTerms.length +
+        ' · Categories: ' + catNames.length;
+      topicSnapshotResultEl.appendChild(meta);
+
+      const globalCard = document.createElement('div');
+      globalCard.className = 'topic-card';
+      globalCard.innerHTML = '<h3>Global terms</h3>';
+      const chips = document.createElement('div');
+      chips.className = 'topic-chips';
+      topTerms.forEach((row) => {
+        const term = Array.isArray(row) ? row[0] : '';
+        const score = Array.isArray(row) ? row[1] : null;
+        if (!term) return;
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'topic-chip';
+        chip.textContent = term + (score != null ? ' (' + score + ')' : '');
+        chip.addEventListener('click', () => startSemanticSearchFromTopic(term));
+        chips.appendChild(chip);
+      });
+      globalCard.appendChild(chips);
+      topicSnapshotResultEl.appendChild(globalCard);
+
+      const grid = document.createElement('div');
+      grid.className = 'topic-grid';
+      catNames.sort().forEach((category) => {
+        const terms = Array.isArray(categories[category]) ? categories[category] : [];
+        const maxVal = terms.reduce((m, r) => Math.max(m, Array.isArray(r) ? Number(r[1] || 0) : 0), 0) || 1;
+        const card = document.createElement('div');
+        card.className = 'topic-card';
+        const h = document.createElement('h3');
+        h.textContent = category;
+        card.appendChild(h);
+        terms.forEach((row) => {
+          const term = Array.isArray(row) ? row[0] : '';
+          const value = Array.isArray(row) ? Number(row[1] || 0) : 0;
+          if (!term) return;
+          const rr = document.createElement('div');
+          rr.className = 'topic-bar-row';
+          const termBtn = document.createElement('button');
+          termBtn.type = 'button';
+          termBtn.className = 'topic-term-btn';
+          termBtn.textContent = term;
+          termBtn.addEventListener('click', () => startSemanticSearchFromTopic(term));
+          const track = document.createElement('div');
+          track.className = 'topic-bar-track';
+          const fill = document.createElement('div');
+          fill.className = 'topic-bar-fill';
+          fill.style.width = String(Math.max(4, Math.round((value / maxVal) * 100))) + '%';
+          track.appendChild(fill);
+          const score = document.createElement('span');
+          score.className = 'small';
+          score.textContent = String(value);
+          rr.appendChild(termBtn);
+          rr.appendChild(track);
+          rr.appendChild(score);
+          card.appendChild(rr);
+        });
+        if (!terms.length) {
+          const empty = document.createElement('p');
+          empty.className = 'small';
+          empty.textContent = 'No salient terms for this category.';
+          card.appendChild(empty);
+        }
+        grid.appendChild(card);
+      });
+      topicSnapshotResultEl.appendChild(grid);
+    }
 
     async function loadPill(id) {
       pillDetailEl.textContent = 'Loading pill...';

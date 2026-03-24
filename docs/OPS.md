@@ -25,6 +25,31 @@
 | Local Ollama | `ollama/llama3` | `ollama/nomic-embed-text` | Run Ollama; no cloud key required for local models. |
 | Hybrid | Cloud LLM + local embed | Mix per LiteLLM docs | Ensure dimensions match your similarity code paths. |
 
+## Local-First model policy
+
+- Extractor and Janitor support model routing policy via:
+  - `EXTRACTOR_MODEL_POLICY` / `JANITOR_MODEL_POLICY`: `local_only`, `local_first`, `external_first`
+  - Optional external models: `EXTRACTOR_EXTERNAL_MODEL`, `JANITOR_EXTERNAL_MODEL`
+  - Escalation gate flags: `EXTRACTOR_ESCALATION_ENABLED`, `JANITOR_ESCALATION_ENABLED`
+- Recommended production default for cost control: `local_first` with escalation disabled.
+- If escalation is enabled, keep strict gates (`EXTRACTOR_ESCALATION_MIN_TEXT_LEN`, `JANITOR_ESCALATION_MIN_GROUP_SIZE`).
+- External A/B trigger conditions and cost cap are defined in [`docs/AB_PROTOCOL.md`](AB_PROTOCOL.md).
+- Optional runtime A/B guards for external calls:
+  - `AB_GUARDS_ENABLED=true`
+  - `AB_ALLOW_EXTERNAL=true`
+  - `AB_MAX_EXTERNAL_CALLS=<N>`
+
+## Hybrid retrieval pilot
+
+- Optional retrieval fusion combines semantic vector ranking with lexical text-score fallback.
+- Safe default is OFF (`HYBRID_RETRIEVAL_ENABLED=false`).
+- Runtime knobs:
+  - `HYBRID_VECTOR_WEIGHT` (default `0.7`)
+  - `HYBRID_LEXICAL_WEIGHT` (default `0.3`)
+  - `HYBRID_LEXICAL_LIMIT` (default `30`)
+  - `HYBRID_LEXICAL_FALLBACK_MIN_VECTOR` (default `3`)
+- API and MCP `semantic_search` also expose an explicit `hybrid` flag per call.
+
 ## Ports (defaults)
 
 | Service | Port | Env override |

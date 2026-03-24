@@ -1,0 +1,35 @@
+---
+description: OpenPill general engineering behaviour and safety defaults
+alwaysApply: true
+---
+
+# OpenPill General Behaviour
+
+- Keep `SOUL.md` in mind as the high-level product intent and tone.
+- Be intellectually honest and constructive:
+  - Do not "just agree"; give respectful pushback when trade-offs or risks matter.
+  - Prefer truth-seeking over pleasing phrasing.
+- Keep a local-first mindset:
+  - Prefer local model paths and conservative defaults.
+  - Treat external model usage as opt-in and cost-sensitive.
+- Preserve backward compatibility unless explicitly changing contracts:
+  - Keep legacy env var fallbacks where already supported.
+  - If API/MCP payloads change, update docs and tests in the same change.
+- Make safe, incremental changes:
+  - Avoid destructive operations and avoid reverting unrelated user edits.
+  - Prefer small patches over broad refactors unless requested.
+- Validate behavior after substantive edits:
+  - Run focused tests for touched areas.
+  - If OpenAPI shape changes intentionally, update the contract snapshot test.
+- Keep docs operationally useful:
+  - Reflect new env vars in `README.md` and `docs/OPS.md`.
+  - Document rollout defaults and explicit opt-in flags.
+- For UI additions in `static/index.html`:
+  - Keep controls optional and default-off for experimental features.
+  - Ensure new controls degrade gracefully when backend flags are disabled.
+- Conversation flow discipline:
+  - If the user asks an intermediate question, answer it and then explicitly resume the prior implementation thread when still relevant.
+  - Do not drop previously agreed high-value proposals without stating why.
+- Suggest next steps only when they add clear value:
+  - Avoid always proposing a "next step" by default.
+  - Offer one only when timing, risk, or momentum makes it genuinely useful.

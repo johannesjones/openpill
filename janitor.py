@@ -20,6 +20,10 @@ Usage:
 Environment:
     JANITOR_MODEL   LiteLLM model string (default: gpt-4o-mini)
                     Examples: gpt-4o, claude-3-5-sonnet-20241022, ollama/llama3
+    JANITOR_MODEL_POLICY       local_only|local_first|external_first (default local_first)
+    JANITOR_EXTERNAL_MODEL     Optional external model for policy/escalation
+    JANITOR_ESCALATION_ENABLED Enable local_first escalation gate (default false)
+    JANITOR_ESCALATION_MIN_GROUP_SIZE  Min group size for consolidation escalation (default 6)
     MONGO_URI       MongoDB connection string
     MONGO_DB        Database name
 """
@@ -32,6 +36,7 @@ import json
 import os
 import sys
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from bson import ObjectId
@@ -43,6 +48,29 @@ from models import KnowledgePill, PillRelationKind, PillSource, PillStatus, Sour
 from pill_relations import add_bidirectional_relation, rewire_relations_on_merge
 
 MODEL = os.getenv("JANITOR_MODEL", "gpt-4o-mini")
+MODEL_POLICY = os.getenv("JANITOR_MODEL_POLICY", "local_first").strip().lower()
+EXTERNAL_MODEL = os.getenv("JANITOR_EXTERNAL_MODEL")
+ESCALATION_ENABLED = os.getenv("JANITOR_ESCALATION_ENABLED", "false").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+ESCALATION_MIN_GROUP_SIZE = int(os.getenv("JANITOR_ESCALATION_MIN_GROUP_SIZE", "6"))
+AB_GUARDS_ENABLED = os.getenv("AB_GUARDS_ENABLED", "false").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+AB_ALLOW_EXTERNAL = os.getenv("AB_ALLOW_EXTERNAL", "false").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+AB_MAX_EXTERNAL_CALLS = int(os.getenv("AB_MAX_EXTERNAL_CALLS", "0"))
+_ab_external_calls_used = 0
+ALLOWED_MODEL_POLICIES = {"local_only", "local_first", "external_first"}
+if MODEL_POLICY not in ALLOWED_MODEL_POLICIES:
+    MODEL_POLICY = "local_first"
 BATCH_SIZE = 40
 
 # ---------------------------------------------------------------------------
@@ -71,6 +99,14 @@ class ConsolidatedPill(BaseModel):
     content: str
     tags: list[str] = Field(default_factory=list)
     confidence: float = 1.0
+
+
+@dataclass(frozen=True)
+class ModelDecision:
+    model: str
+    policy: str
+    escalated: bool
+    reason: str
 
 
 # ---------------------------------------------------------------------------
@@ -118,9 +154,68 @@ Return ONLY valid JSON matching this schema (no markdown, no explanation outside
 """
 
 
-async def _llm_call(system: str, user: str) -> str:
+def _resolve_model_for_task(*, task_name: str, group_size: int) -> ModelDecision:
+    global _ab_external_calls_used
+    local_model = MODEL
+    external_model = (EXTERNAL_MODEL or "").strip()
+    escalation_allowed = (
+        ESCALATION_ENABLED
+        and bool(external_model)
+        and group_size >= ESCALATION_MIN_GROUP_SIZE
+        and task_name == "consolidation"
+    )
+
+    if MODEL_POLICY == "local_only" or not external_model:
+        return ModelDecision(
+            model=local_model,
+            policy=MODEL_POLICY,
+            escalated=False,
+            reason="local_only_or_no_external_model",
+        )
+    if AB_GUARDS_ENABLED:
+        if not AB_ALLOW_EXTERNAL:
+            return ModelDecision(
+                model=local_model,
+                policy=MODEL_POLICY,
+                escalated=False,
+                reason="ab_guard_external_not_allowed",
+            )
+        if AB_MAX_EXTERNAL_CALLS > 0 and _ab_external_calls_used >= AB_MAX_EXTERNAL_CALLS:
+            return ModelDecision(
+                model=local_model,
+                policy=MODEL_POLICY,
+                escalated=False,
+                reason="ab_guard_external_call_cap_reached",
+            )
+    if MODEL_POLICY == "external_first":
+        if AB_GUARDS_ENABLED:
+            _ab_external_calls_used += 1
+        return ModelDecision(
+            model=external_model,
+            policy=MODEL_POLICY,
+            escalated=True,
+            reason="external_first",
+        )
+    if escalation_allowed:
+        if AB_GUARDS_ENABLED:
+            _ab_external_calls_used += 1
+        return ModelDecision(
+            model=external_model,
+            policy=MODEL_POLICY,
+            escalated=True,
+            reason="local_first_escalation_gate",
+        )
+    return ModelDecision(
+        model=local_model,
+        policy=MODEL_POLICY,
+        escalated=False,
+        reason="local_first_default",
+    )
+
+
+async def _llm_call(system: str, user: str, *, model: str | None = None) -> str:
     response = await acompletion(
-        model=MODEL,
+        model=model or MODEL,
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -134,7 +229,8 @@ async def _llm_call(system: str, user: str) -> str:
 async def analyze_batch(pills: list[dict]) -> JanitorAnalysis:
     """Send a batch of pills to the LLM and parse the analysis."""
     payload = json.dumps(pills, ensure_ascii=False, default=str)
-    raw = await _llm_call(ANALYSIS_SYSTEM_PROMPT, payload)
+    decision = _resolve_model_for_task(task_name="analysis", group_size=len(pills))
+    raw = await _llm_call(ANALYSIS_SYSTEM_PROMPT, payload, model=decision.model)
     return JanitorAnalysis.model_validate_json(raw)
 
 
@@ -145,7 +241,10 @@ async def consolidate_pills(
     payload = json.dumps(
         {"reason": reason, "pills": pills}, ensure_ascii=False, default=str
     )
-    raw = await _llm_call(CONSOLIDATION_SYSTEM_PROMPT, payload)
+    decision = _resolve_model_for_task(
+        task_name="consolidation", group_size=len(pills)
+    )
+    raw = await _llm_call(CONSOLIDATION_SYSTEM_PROMPT, payload, model=decision.model)
     return ConsolidatedPill.model_validate_json(raw)
 
 
@@ -244,6 +343,7 @@ async def run_janitor(
     total_pills = sum(len(v) for v in categories.values())
     print(f"\n{'=' * 60}")
     print(f"  Memory Janitor  |  model: {MODEL}")
+    print(f"  model_policy: {MODEL_POLICY}")
     print(f"  {total_pills} active pills across {len(categories)} categories")
     mode_str = "DRY RUN (no changes)" if dry_run else "APPLY"
     if not dry_run and confirm:

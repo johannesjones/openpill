@@ -7,6 +7,13 @@ GUARDRAIL_SCRIPT="${ROOT_DIR}/scripts/openclaw_guardrail_smoke.sh"
 CONTAINER="${OPENCLAW_CONTAINER:-openclaw-sandbox}"
 BASE_MODEL="${BASE_MODEL:-ollama/qwen2.5:7b}"
 CHALLENGER_MODEL="${CHALLENGER_MODEL:-gemini/gemini-2.0-flash}"
+AB_ALLOW_EXTERNAL_AB="${AB_ALLOW_EXTERNAL_AB:-false}"
+AB_MAX_COST_USD="${AB_MAX_COST_USD:-}"
+
+is_external_model() {
+  local model="$1"
+  [[ ! "${model}" =~ ^ollama/ ]]
+}
 
 if [[ ! -x "${GUARDRAIL_SCRIPT}" ]]; then
   echo "FAIL: missing executable guardrail script at ${GUARDRAIL_SCRIPT}"
@@ -53,9 +60,23 @@ if ! docker ps --format '{{.Names}}' | grep -qx "${CONTAINER}"; then
   exit 1
 fi
 
+if is_external_model "${CHALLENGER_MODEL}"; then
+  if [[ "${AB_ALLOW_EXTERNAL_AB}" != "true" ]]; then
+    echo "FAIL: external challenger requires AB_ALLOW_EXTERNAL_AB=true"
+    exit 1
+  fi
+  if [[ -z "${AB_MAX_COST_USD}" ]]; then
+    echo "FAIL: external challenger requires AB_MAX_COST_USD to be set"
+    exit 1
+  fi
+fi
+
 echo "Running A/B matrix with:"
 echo "  BASE_MODEL=${BASE_MODEL}"
 echo "  CHALLENGER_MODEL=${CHALLENGER_MODEL}"
+if [[ -n "${AB_MAX_COST_USD}" ]]; then
+  echo "  AB_MAX_COST_USD=${AB_MAX_COST_USD}"
+fi
 echo
 
 run_for_model "${BASE_MODEL}"

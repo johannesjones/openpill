@@ -37,6 +37,17 @@ from pill_relations import expand_semantic_neighbors_hops, neighbors_for_pill
 from topics import build_topic_snapshot
 
 logger = logging.getLogger("openpill.api")
+HYBRID_RETRIEVAL_ENABLED = os.getenv("HYBRID_RETRIEVAL_ENABLED", "false").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+HYBRID_VECTOR_WEIGHT = float(os.getenv("HYBRID_VECTOR_WEIGHT", "0.7"))
+HYBRID_LEXICAL_WEIGHT = float(os.getenv("HYBRID_LEXICAL_WEIGHT", "0.3"))
+HYBRID_LEXICAL_LIMIT = int(os.getenv("HYBRID_LEXICAL_LIMIT", "30"))
+HYBRID_LEXICAL_FALLBACK_MIN_VECTOR = int(
+    os.getenv("HYBRID_LEXICAL_FALLBACK_MIN_VECTOR", "3")
+)
 
 # Optional: if set, all routes except public probes/docs require Bearer or X-API-Key.
 # Prefer OPENPILL_API_KEY, keep legacy keys for compatibility.
@@ -334,6 +345,10 @@ async def semantic_search(
         le=100,
         description="Hard cap on total pills returned after expansion.",
     ),
+    hybrid: bool = Query(
+        default=False,
+        description="Enable hybrid retrieval fusion (vector + lexical fallback).",
+    ),
 ):
     """Find pills by meaning using vector similarity + consistency metadata."""
     col = await get_collection()
@@ -381,6 +396,67 @@ async def semantic_search(
 
     candidates.sort(key=lambda d: d["similarity"], reverse=True)
     results = candidates[:limit]
+    lexical_candidates: list[dict] = []
+    fusion_enabled = hybrid or HYBRID_RETRIEVAL_ENABLED
+    lexical_fallback_used = fusion_enabled and (
+        len(candidates) < HYBRID_LEXICAL_FALLBACK_MIN_VECTOR
+    )
+    if lexical_fallback_used:
+        lexical_filter: dict = {"status": "active", "$text": {"$search": q}}
+        if category:
+            lexical_filter["category"] = category
+        cursor = (
+            col.find(
+                lexical_filter,
+                {"embedding": 0, "score": {"$meta": "textScore"}},
+            )
+            .sort([("score", {"$meta": "textScore"})])
+            .limit(max(limit * 2, HYBRID_LEXICAL_LIMIT))
+        )
+        async for doc in cursor:
+            row = _serialize_doc(doc)
+            row["lexical_score"] = round(float(doc.get("score", 0.0)), 4)
+            lexical_candidates.append(row)
+
+    if lexical_fallback_used and lexical_candidates:
+        merged: dict[str, dict] = {r["_id"]: r for r in results if "_id" in r}
+        max_lex = max(
+            (float(r.get("lexical_score", 0.0)) for r in lexical_candidates),
+            default=1.0,
+        ) or 1.0
+        for row in lexical_candidates:
+            rid = row.get("_id")
+            if not rid:
+                continue
+            if rid not in merged:
+                _attach_consistency_metadata(
+                    row,
+                    confidence=float(row.get("confidence", 1.0)),
+                    freshness=_freshness_score(
+                        datetime.fromisoformat(row["updated_at"])
+                    )
+                    if isinstance(row.get("updated_at"), str)
+                    else 0.5,
+                    conflict_count=_count_conflict_relations(row),
+                    similarity=0.0,
+                )
+                merged[rid] = row
+            lex_norm = float(row.get("lexical_score", 0.0)) / max_lex
+            vec = float(merged[rid].get("similarity", 0.0))
+            hybrid_score = HYBRID_VECTOR_WEIGHT * vec + HYBRID_LEXICAL_WEIGHT * lex_norm
+            merged[rid]["hybrid_score"] = round(hybrid_score, 4)
+            merged[rid]["retrieval_score"] = round(
+                max(
+                    0.0,
+                    min(
+                        1.0,
+                        0.7 * float(merged[rid].get("retrieval_score", 0.0))
+                        + 0.3 * hybrid_score,
+                    ),
+                ),
+                4,
+            )
+        results = list(merged.values())
     if expand_neighbors:
         results = await expand_semantic_neighbors_hops(
             col,
@@ -401,7 +477,17 @@ async def semantic_search(
                 similarity=float(row.get("similarity", 0.0)),
             )
     results.sort(key=lambda d: d.get("retrieval_score", 0.0), reverse=True)
-    return {"count": len(results), "pills": results}
+    final = results[:max_nodes]
+    return {
+        "count": len(final),
+        "pills": final,
+        "retrieval_metrics": {
+            "hybrid_enabled": fusion_enabled,
+            "lexical_fallback_used": lexical_fallback_used,
+            "vector_candidates": len(candidates),
+            "lexical_candidates": len(lexical_candidates),
+        },
+    }
 
 
 @app.get("/pills/{pill_id}/neighbors")

@@ -1,0 +1,26 @@
+---
+description: Python backend standards for API, extractor, janitor, and MCP logic
+globs: "**/*.py"
+alwaysApply: false
+---
+
+# OpenPill Python Backend Standards
+
+- Keep runtime behavior backward compatible by default:
+  - Preserve env var fallback chains.
+  - Avoid breaking API/MCP response fields unless explicitly requested.
+- Prefer explicit safe defaults:
+  - Experimental features should be default-off.
+  - Cost-sensitive/external-model behavior must be opt-in.
+- For retrieval and scoring logic:
+  - Add metrics fields when useful for observability.
+  - Keep ranking deterministic and bounded.
+- For policy/guard logic:
+  - Fail safely to local behavior instead of hard-failing.
+  - Include machine-readable reason fields when routing decisions change.
+- Testing discipline:
+  - Add or update focused tests for changed behavior.
+  - If OpenAPI changes intentionally, update hash snapshot test in the same change.
+- Keep modules readable:
+  - Prefer small helper functions over deeply nested inline logic.
+  - Add brief comments only where logic is non-obvious.

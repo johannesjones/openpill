@@ -53,10 +53,14 @@ pytest tests/ -v
 
 CI (GitHub Actions) runs `pytest tests/` on push/PR; an optional job exercises MongoDB (`RUN_MONGO_INTEGRATION=1`). Local Mongo smoke: [`scripts/integration_mongo_smoke.sh`](scripts/integration_mongo_smoke.sh). OpenClaw guardrail smoke (semantic_search required): [`scripts/openclaw_guardrail_smoke.sh`](scripts/openclaw_guardrail_smoke.sh). Retrieval benchmark (1-hop vs 2-hop): [`scripts/benchmark_semantic_hops.py`](scripts/benchmark_semantic_hops.py).
 Suggested query set for the benchmark: [`scripts/queries_openclaw_memory.txt`](scripts/queries_openclaw_memory.txt).
+A/B guardrail matrix helper: [`scripts/openclaw_model_ab_matrix.sh`](scripts/openclaw_model_ab_matrix.sh). Protocol and trigger conditions: [`docs/AB_PROTOCOL.md`](docs/AB_PROTOCOL.md).
 
 ## Quick Start
 
 ```bash
+# 0. Create local env file
+cp .env.example .env
+
 # 1. Start MongoDB (auto-initializes replica set for Change Streams)
 docker compose up -d
 
@@ -106,7 +110,7 @@ add this to your Cursor MCP settings:
 | Tool | Description |
 |---|---|
 | `search_pills` | Full-text keyword search with category/tag filters |
-| `semantic_search` | Vector similarity search; optional graph expansion via `expand_neighbors`, `neighbor_limit`, `max_hops` (1-2), `max_nodes` |
+| `semantic_search` | Vector similarity search; optional graph expansion via `expand_neighbors`, `neighbor_limit`, `max_hops` (1-2), `max_nodes`; optional hybrid lexical fallback via `hybrid` |
 | `get_pill` | Retrieve a single pill by ObjectId |
 | `get_pill_neighbors` | Outgoing and incoming related pills (graph edges) |
 | `create_pill` | Store a new pill (auto-embeds on creation) |
@@ -185,7 +189,7 @@ uvicorn api:app --port 8080 --reload   # with hot-reload
 | Endpoint | Method | Description |
 |---|---|---|
 | `/pills/search` | GET | Full-text keyword search with category/tag/status filters |
-| `/pills/semantic` | GET | Semantic search; query params `expand_neighbors`, `neighbor_limit` |
+| `/pills/semantic` | GET | Semantic search; query params include `expand_neighbors`, `neighbor_limit`, `max_hops`, `max_nodes`, and optional `hybrid` |
 | `/pills/{id}/neighbors` | GET | 1-hop related pills (outgoing + incoming edges) |
 | `/pills/{id}` | GET | Retrieve a single pill |
 | `/pills` | POST | Create a new pill (auto-embeds) |
@@ -201,6 +205,8 @@ uvicorn api:app --port 8080 --reload   # with hot-reload
 Interactive Swagger UI at `http://localhost:8080/docs`. The OpenAPI spec at
 `/openapi.json` can be pasted directly into ChatGPT's Custom GPT Action config.
 
+**What hybrid retrieval means for users:** search stays semantic-first, but can optionally add lexical fallback when semantic matches are too sparse. This improves recall for rare wording/keywords without changing your normal workflow.
+
 ### Test the API in the browser
 
 1. Start the API: `python api.py`
@@ -214,7 +220,7 @@ For a minimal UI to paste chats and manage pills:
 1. Start the API: `python api.py`
 2. Open **http://localhost:8080/app** in your browser.
 3. Paste a conversation transcript into the **Save my chat** section and click **Distill & save**. The app calls `/pills/ingest-conversation`, which first summarizes the transcript and then extracts pills from the summary (`SourceType.CHAT` with `source.reference` set to `conversation:<ref>`).
-4. Use the **Search pills** and **Pill detail** panels to browse, edit, and archive pills (PATCH/DELETE `/pills/{id}`). The detail view loads **Related pills** (1-hop graph neighbors) when edges exist.
+4. Use the **Search pills** and **Pill detail** panels to browse, edit, and archive pills (PATCH/DELETE `/pills/{id}`). In semantic mode, enable **Hybrid fallback** if you want better recall for edge-case wording. The detail view loads **Related pills** (1-hop graph neighbors) when edges exist.
 
 ## OpenPill Proxy (`proxy.py`)
 
@@ -276,6 +282,7 @@ JANITOR_MODEL=ollama/llama3 python janitor.py   # use local model
 
 All operations are logged to the `janitor_audit_log` MongoDB collection.
 Originals are archived (never deleted) and can be restored via `undo_consolidation`.
+Local-first routing is controlled with `JANITOR_MODEL_POLICY` (`local_only|local_first|external_first`, default `local_first`). Optional escalation to an external model can be enabled with `JANITOR_ESCALATION_ENABLED=true` and `JANITOR_EXTERNAL_MODEL=...`.
 
 ### Memory Extractor (`extractor.py`)
 
@@ -289,6 +296,7 @@ python extractor.py --file notes.md --min-confidence 0.7 --max-pills 20
 ```
 
 Deduplicates via embedding similarity before inserting. Threshold is configurable: `EXTRACTOR_DUPLICATE_THRESHOLD` (default 0.92); conversation pills use a stricter default (0.95) unless `EXTRACTOR_CONVERSATION_DUPLICATE_THRESHOLD` is set. After insert, optional **related** edges link the new pill to same-category neighbors in similarity band `[EXTRACTOR_RELATED_THRESHOLD, duplicate threshold)` (see `EXTRACTOR_LINK_ON_INSERT`, `EXTRACTOR_RELATED_MAX_LINKS`). Very short pills are skipped (min title/content length configurable via env). Categories are normalized to a fixed list. Confidence is lightly re-scored. Extraction retries once on JSON parse failure. Ingest responses include `stats` and duplicate skips include `similar_pill_id` when applicable.
+Local-first routing is controlled with `EXTRACTOR_MODEL_POLICY` (`local_only|local_first|external_first`, default `local_first`). Optional escalation to an external model is gated behind `EXTRACTOR_ESCALATION_ENABLED=true` and an input-length threshold.
 
 ### Embedding Backfill (`backfill_embeddings.py`)
 
@@ -352,6 +360,14 @@ relations       [{target_id, kind}]  Optional graph edges: kind is related | sup
 | `EMBEDDING_MODEL` | `text-embedding-3-small` | LiteLLM embedding model |
 | `JANITOR_MODEL` | `gpt-4o-mini` | LiteLLM model for the janitor |
 | `EXTRACTOR_MODEL` | `gpt-4o-mini` | LiteLLM model for the extractor |
+| `JANITOR_MODEL_POLICY` | `local_first` | Janitor routing policy: `local_only`, `local_first`, `external_first` |
+| `JANITOR_EXTERNAL_MODEL` | -- | Optional external Janitor model used by policy/escalation |
+| `JANITOR_ESCALATION_ENABLED` | `false` | Allow Janitor escalation from local to external model |
+| `JANITOR_ESCALATION_MIN_GROUP_SIZE` | `6` | Min consolidation group size to escalate (local_first mode) |
+| `EXTRACTOR_MODEL_POLICY` | `local_first` | Extractor routing policy: `local_only`, `local_first`, `external_first` |
+| `EXTRACTOR_EXTERNAL_MODEL` | -- | Optional external Extractor model used by policy/escalation |
+| `EXTRACTOR_ESCALATION_ENABLED` | `false` | Allow Extractor escalation from local to external model |
+| `EXTRACTOR_ESCALATION_MIN_TEXT_LEN` | `8000` | Min transcript/text length to escalate (conversation path) |
 | `EXTRACTOR_DUPLICATE_THRESHOLD` | `0.92` | Dedup similarity threshold (document extraction) |
 | `EXTRACTOR_CONVERSATION_DUPLICATE_THRESHOLD` | `0.95` (or same as above) | Stricter dedup for conversation pills |
 | `EXTRACTOR_MAX_PILLS` | `50` | Max pills per extraction run |
@@ -363,6 +379,11 @@ relations       [{target_id, kind}]  Optional graph edges: kind is related | sup
 | `EXTRACTOR_RELATED_THRESHOLD` | `0.88` | Min similarity to auto-link `related` edges on insert |
 | `EXTRACTOR_RELATED_MAX_LINKS` | `3` | Max neighbor links per new pill |
 | `EXTRACTOR_LINK_ON_INSERT` | `true` | Enable post-insert graph linking |
+| `HYBRID_RETRIEVAL_ENABLED` | `false` | Global switch for hybrid retrieval (vector + lexical fallback) |
+| `HYBRID_VECTOR_WEIGHT` | `0.7` | Weight of vector similarity in hybrid fusion |
+| `HYBRID_LEXICAL_WEIGHT` | `0.3` | Weight of lexical text score in hybrid fusion |
+| `HYBRID_LEXICAL_LIMIT` | `30` | Max lexical candidates fetched in fallback mode |
+| `HYBRID_LEXICAL_FALLBACK_MIN_VECTOR` | `3` | Trigger lexical fallback when fewer vector candidates are found |
 | `WATCHDOG_SIMILARITY_THRESHOLD` | `0.85` | Watchdog embedding similarity threshold |
 | `PROXY_PORT` | `4000` | Proxy listen port |
 | `PROXY_MAX_PILLS` | `5` | Max pills injected per proxy request |

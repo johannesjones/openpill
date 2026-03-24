@@ -1,0 +1,25 @@
+---
+description: Static UI standards for OpenPill single-page app
+globs: "static/index.html"
+alwaysApply: false
+---
+
+# OpenPill Static UI Standards
+
+- Keep UX simple and progressive:
+  - New controls should be optional and conservative by default.
+  - UI must remain usable if optional backend features are disabled.
+- Respect current style system:
+  - Reuse existing color tokens and spacing patterns.
+  - Keep additions visually consistent with existing cards/inputs/buttons.
+- API wiring expectations:
+  - Clamp and validate user inputs before requests.
+  - Surface errors in user-facing text instead of silent failures.
+  - Avoid introducing implicit auth assumptions; keep API-key behavior explicit.
+- Search and retrieval UI:
+  - Expose advanced options as opt-in.
+  - Keep defaults aligned with safe backend defaults.
+  - Prefer transparent labels (what a toggle does for the user).
+- Maintainability:
+  - Keep functions focused and avoid duplicated request logic.
+  - Do not introduce external build tooling for this static page.

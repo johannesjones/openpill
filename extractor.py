@@ -13,6 +13,10 @@ Usage:
 
 Environment:
     EXTRACTOR_MODEL    LiteLLM model string (default: gpt-4o-mini)
+    EXTRACTOR_MODEL_POLICY               local_only|local_first|external_first (default local_first)
+    EXTRACTOR_EXTERNAL_MODEL             Optional external model for policy/escalation
+    EXTRACTOR_ESCALATION_ENABLED         Enable local_first escalation gate (default false)
+    EXTRACTOR_ESCALATION_MIN_TEXT_LEN    Min transcript length for escalation (default 8000)
     EMBEDDING_MODEL    Embedding model (default: text-embedding-3-small)
     EXTRACTOR_DUPLICATE_THRESHOLD         Similarity threshold for dedup (default 0.92).
     EXTRACTOR_CONVERSATION_DUPLICATE_THRESHOLD  Stricter threshold for conversation pills (default 0.95).
@@ -34,6 +38,7 @@ import asyncio
 import os
 import re
 import sys
+from dataclasses import dataclass
 
 from litellm import acompletion
 from pydantic import BaseModel, Field, ValidationError
@@ -44,6 +49,29 @@ from models import KnowledgePill, PillRelationKind, PillSource, SourceType
 from pill_relations import add_bidirectional_relation, find_related_candidates
 
 MODEL = os.getenv("EXTRACTOR_MODEL", "gpt-4o-mini")
+MODEL_POLICY = os.getenv("EXTRACTOR_MODEL_POLICY", "local_first").strip().lower()
+EXTERNAL_MODEL = os.getenv("EXTRACTOR_EXTERNAL_MODEL")
+ESCALATION_ENABLED = os.getenv("EXTRACTOR_ESCALATION_ENABLED", "false").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+ESCALATION_MIN_TEXT_LEN = int(os.getenv("EXTRACTOR_ESCALATION_MIN_TEXT_LEN", "8000"))
+AB_GUARDS_ENABLED = os.getenv("AB_GUARDS_ENABLED", "false").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+AB_ALLOW_EXTERNAL = os.getenv("AB_ALLOW_EXTERNAL", "false").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+AB_MAX_EXTERNAL_CALLS = int(os.getenv("AB_MAX_EXTERNAL_CALLS", "0"))
+_ab_external_calls_used = 0
+ALLOWED_MODEL_POLICIES = {"local_only", "local_first", "external_first"}
+if MODEL_POLICY not in ALLOWED_MODEL_POLICIES:
+    MODEL_POLICY = "local_first"
 
 # Canonical categories for normalization; LLM output is mapped to these or "other"
 ALLOWED_CATEGORIES = (
@@ -180,6 +208,14 @@ class ExtractionResult(BaseModel):
     pills: list[ExtractedFact] = Field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class ModelDecision:
+    model: str
+    policy: str
+    escalated: bool
+    reason: str
+
+
 # ---------------------------------------------------------------------------
 # LLM prompt
 # ---------------------------------------------------------------------------
@@ -247,10 +283,75 @@ If nothing extractable: {"pills": []}\
 """
 
 
+def _resolve_model_for_task(
+    *,
+    task_name: str,
+    input_len: int,
+) -> ModelDecision:
+    """Resolve local-first model routing with optional external escalation."""
+    global _ab_external_calls_used
+    local_model = MODEL
+    external_model = (EXTERNAL_MODEL or "").strip()
+    escalation_allowed = (
+        ESCALATION_ENABLED
+        and bool(external_model)
+        and input_len >= ESCALATION_MIN_TEXT_LEN
+        and task_name in {"summary", "conversation_extraction"}
+    )
+
+    if MODEL_POLICY == "local_only" or not external_model:
+        return ModelDecision(
+            model=local_model,
+            policy=MODEL_POLICY,
+            escalated=False,
+            reason="local_only_or_no_external_model",
+        )
+    if AB_GUARDS_ENABLED:
+        if not AB_ALLOW_EXTERNAL:
+            return ModelDecision(
+                model=local_model,
+                policy=MODEL_POLICY,
+                escalated=False,
+                reason="ab_guard_external_not_allowed",
+            )
+        if AB_MAX_EXTERNAL_CALLS > 0 and _ab_external_calls_used >= AB_MAX_EXTERNAL_CALLS:
+            return ModelDecision(
+                model=local_model,
+                policy=MODEL_POLICY,
+                escalated=False,
+                reason="ab_guard_external_call_cap_reached",
+            )
+    if MODEL_POLICY == "external_first":
+        if AB_GUARDS_ENABLED:
+            _ab_external_calls_used += 1
+        return ModelDecision(
+            model=external_model,
+            policy=MODEL_POLICY,
+            escalated=True,
+            reason="external_first",
+        )
+    if escalation_allowed:
+        if AB_GUARDS_ENABLED:
+            _ab_external_calls_used += 1
+        return ModelDecision(
+            model=external_model,
+            policy=MODEL_POLICY,
+            escalated=True,
+            reason="local_first_escalation_gate",
+        )
+    return ModelDecision(
+        model=local_model,
+        policy=MODEL_POLICY,
+        escalated=False,
+        reason="local_first_default",
+    )
+
+
 async def extract_facts(
     text: str,
     *,
     system_prompt: str | None = None,
+    model: str | None = None,
 ) -> list[ExtractedFact]:
     """Send raw text to the LLM and parse extracted facts. Retries once on JSON parse failure."""
     prompt = system_prompt if system_prompt is not None else EXTRACTION_SYSTEM_PROMPT
@@ -260,7 +361,7 @@ async def extract_facts(
     ]
     for attempt in range(2):
         response = await acompletion(
-            model=MODEL,
+            model=model or MODEL,
             messages=messages,
             temperature=0.1,
             response_format={"type": "json_object"},
@@ -298,10 +399,10 @@ Return a plain-text summary (no markdown), between {lo} and {hi} characters.\
 """
 
 
-async def summarize_transcript(transcript: str) -> str:
+async def summarize_transcript(transcript: str, *, model: str | None = None) -> str:
     """Summarize a conversation transcript into a compact description."""
     response = await acompletion(
-        model=MODEL,
+        model=model or MODEL,
         messages=[
             {"role": "system", "content": _conversation_summary_prompt()},
             {"role": "user", "content": transcript},
@@ -340,12 +441,13 @@ async def run_extraction(
     col = await get_collection()
 
     print(f"\n{'=' * 60}")
-    print(f"  Knowledge Extractor  |  model: {MODEL}")
+    model_decision = _resolve_model_for_task(task_name="extract", input_len=len(text))
+    print(f"  Knowledge Extractor  |  model: {model_decision.model}")
     print(f"  source: {source_reference}")
     print(f"  mode: {'DRY RUN' if dry_run else 'INSERT'}")
     print(f"{'=' * 60}\n")
 
-    facts = await extract_facts(text)
+    facts = await extract_facts(text, model=model_decision.model)
     for f in facts:
         f.category = normalize_category(f.category)
         f.confidence = adjust_confidence(f)
@@ -432,6 +534,12 @@ async def run_extraction(
         "skipped_duplicate": skipped_duplicate,
         "skipped_short": skipped_short,
         "stats": {"text_length": len(text), "candidates": len(facts)},
+        "model": {
+            "selected": model_decision.model,
+            "policy": model_decision.policy,
+            "escalated": model_decision.escalated,
+            "reason": model_decision.reason,
+        },
     }
 
 
@@ -446,12 +554,19 @@ async def run_conversation_extraction(
     col = await get_collection()
 
     print(f"\n{'=' * 60}")
-    print(f"  Conversation Extractor  |  model: {MODEL}")
+    summary_model = _resolve_model_for_task(task_name="summary", input_len=len(transcript))
+    extraction_model = _resolve_model_for_task(
+        task_name="conversation_extraction", input_len=len(transcript)
+    )
+    print(
+        "  Conversation Extractor  |  "
+        f"summary_model: {summary_model.model} | extraction_model: {extraction_model.model}"
+    )
     print(f"  source: {source_reference}")
     print(f"  mode: {'DRY RUN' if dry_run else 'INSERT'}")
     print(f"{'=' * 60}\n")
 
-    summary = await summarize_transcript(transcript)
+    summary = await summarize_transcript(transcript, model=summary_model.model)
     summary_length = len(summary)
     print("Conversation summary:\n")
     print(summary)
@@ -471,7 +586,9 @@ async def run_conversation_extraction(
 
     conv_threshold = _get_duplicate_threshold(for_conversation=True)
     facts = await extract_facts(
-        extraction_input, system_prompt=CONVERSATION_EXTRACTION_SYSTEM_PROMPT
+        extraction_input,
+        system_prompt=CONVERSATION_EXTRACTION_SYSTEM_PROMPT,
+        model=extraction_model.model,
     )
     for f in facts:
         f.category = normalize_category(f.category)
@@ -563,6 +680,11 @@ async def run_conversation_extraction(
             "summary_length": summary_length,
             "excerpt_used": excerpt_used,
             "candidates": len(facts),
+            "summary_model": summary_model.model,
+            "extraction_model": extraction_model.model,
+            "model_policy": MODEL_POLICY,
+            "summary_escalated": summary_model.escalated,
+            "extraction_escalated": extraction_model.escalated,
         },
     }
 
