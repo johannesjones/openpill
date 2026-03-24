@@ -34,6 +34,40 @@ bash scripts/openclaw_guardrail_smoke.sh
 
 This executes 3 fixed OpenClaw prompts and fails if `semantic_search` is not called or if memory backend connection errors are detected.
 
+### Autonomous markdown -> OpenPill ingestion
+
+If OpenClaw (or your workflow) keeps memory in markdown files, OpenPill does not ingest those automatically unless you wire a bridge.
+
+Use:
+
+```bash
+python scripts/ingest_markdown_memory.py --root /path/to/memory/dir --interval 60
+```
+
+What it does:
+
+- scans `.md` files under the root
+- ingests only changed files (`POST /pills/ingest`)
+- uses deterministic idempotency keys
+- stores local ingest state in `.openpill_md_ingest_state.json` (configurable)
+
+Equivalent Make target:
+
+```bash
+make md-watch ROOT=/path/to/memory/dir INTERVAL=60
+```
+
+You can auto-start this on login (cross-platform wrapper):
+
+```bash
+make md-watch-install ROOT=/path/to/memory/dir INTERVAL=60
+```
+
+This installs:
+- macOS: launchd user agent
+- Linux: systemd user service
+- Windows: Startup launcher
+
 ## MCP (stdio) — Cursor and others
 
 Run the MCP server from the repo root (after `pip install -r requirements.txt` and MongoDB):

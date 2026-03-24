@@ -83,6 +83,61 @@ python api.py                          # http://localhost:8080/docs
 python proxy.py                        # http://localhost:4000/v1
 ```
 
+### Developer shortcuts
+
+Use the `Makefile` to avoid typing long command chains repeatedly:
+
+```bash
+make help
+make mongo-up
+make test-unit
+make ci-local
+```
+
+### OpenPill tool shortcuts (search/get flows)
+
+For day-to-day memory checks during development, use:
+
+```bash
+make tool-semantic Q="openclaw integration" LIMIT=10 HYBRID=true
+make tool-search Q="idempotency key" LIMIT=20
+make tool-get ID="<pill_id>"
+make tool-neighbors ID="<pill_id>"
+make tool-categories
+make tool-topics TOP=20 PER=10 MIN_DF=2 MIN_LEN=3
+make md-ingest ROOT=.
+make md-watch ROOT=. INTERVAL=60
+```
+
+These commands call the REST API shortcuts in `scripts/openpill_tools.sh`.
+Optional env:
+
+```bash
+export OPENPILL_API_BASE="http://localhost:8080"
+export OPENPILL_API_KEY="<your_key_if_enabled>"
+```
+
+For autonomous markdown-memory sync into OpenPill, use `scripts/ingest_markdown_memory.py` (or `make md-watch`), which ingests only changed `.md` files with idempotency keys.
+
+#### Auto-start on login (cross-platform)
+
+If you want fully hands-off background sync on login (macOS/Linux/Windows):
+
+```bash
+make md-watch-install ROOT=. INTERVAL=60
+```
+
+Remove it later with:
+
+```bash
+make md-watch-uninstall
+```
+
+Implementation by OS:
+- macOS: launchd user agent
+- Linux: systemd user service
+- Windows: Startup folder launcher
+
 ## Cursor Integration
 
 The project includes a `.cursor/mcp.json` config. To use it globally,

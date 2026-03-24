@@ -33,3 +33,16 @@ alwaysApply: true
 - Suggest next steps only when they add clear value:
   - Avoid always proposing a "next step" by default.
   - Offer one only when timing, risk, or momentum makes it genuinely useful.
+- Git commit hygiene:
+  - Do not use `git commit --trailer`.
+  - Keep commit messages plain unless the user explicitly asks for trailers/footers.
+- Prefer project automation commands over ad-hoc command chains:
+  - Use `make` targets from `Makefile` first (e.g. `make mongo-up`, `make test-unit`, `make ci-local`).
+  - If a requested workflow has no target yet, add one before repeating long manual command sequences.
+- For memory retrieval questions in development:
+  - Prefer OpenPill tool flow over guessing from stale context.
+  - Use `semantic_search` first, then `get_pill` / `get_pill_neighbors` as needed.
+  - Use the project shortcuts (`make tool-*` / `scripts/openpill_tools.sh`) to execute these quickly.
+- For markdown memory automation:
+  - Prefer autonomous changed-file ingestion over manual one-off prompts.
+  - Use `scripts/ingest_markdown_memory.py` (or `make md-watch`) to ingest changed `.md` files with idempotency.

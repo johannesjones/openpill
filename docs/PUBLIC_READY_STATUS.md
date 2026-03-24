@@ -25,21 +25,21 @@ Status values:
 | Security and privacy | Auth docs match runtime (`OPENPILL_API_KEY` + legacy vars) | DONE | jjones | Runtime fallback order documented and implemented |
 | Security and privacy | Public routes intentionally documented | DONE | jjones | Health/docs/static exceptions documented |
 | Quickstart DX | README quickstart replay from clean shell succeeds | IN_PROGRESS | jjones | Needs one clean-shell rehearsal before GO |
-| Quickstart DX | `pytest tests/ -v` succeeds | IN_PROGRESS | jjones | Run targeted + full suite in final validation pass |
-| Quickstart DX | `scripts/integration_mongo_smoke.sh` succeeds | IN_PROGRESS | jjones | Script exists; rerun during release-candidate check |
-| Quickstart DX | `scripts/openclaw_guardrail_smoke.sh` succeeds | IN_PROGRESS | jjones | Script exists and adapted for pure bash regex |
+| Quickstart DX | `pytest tests/ -v` succeeds | DONE | jjones | Verified locally on 2026-03-24: 22 passed, 2 skipped |
+| Quickstart DX | `scripts/integration_mongo_smoke.sh` succeeds | DONE | jjones | Verified locally on 2026-03-24 with API health returning `{\"status\":\"ok\"}` |
+| Quickstart DX | `scripts/openclaw_guardrail_smoke.sh` succeeds | DONE | jjones | Verified locally on 2026-03-24: all 3 guardrail cases PASS |
 | Quickstart DX | UI works in same-origin and remote API mode | IN_PROGRESS | jjones | API settings + auth header support implemented |
 | Demo readiness | Demo flow documented and rehearsed | IN_PROGRESS | jjones | Rehearsal checklist not finalized |
 | Demo readiness | Optional screenshots/GIF prepared | TODO |  |  |
 | Repo hygiene | Branch clean (`git status`) | IN_PROGRESS | jjones | Work branch still active |
 | Repo hygiene | Commit history grouped and readable | TODO | jjones | To be done at commit grouping step |
-| Repo hygiene | Release candidate commit/tag selected | TODO | jjones | Pending final validation |
+| Repo hygiene | Release candidate commit/tag selected | DONE | jjones | RC tag `v0.1.0-rc1` selected on 2026-03-24 |
 
 ## Go/No-Go
 
 - Decision: `NO-GO`
 - Blocking items:
-  - Final validation pass (tests + smokes + docs sanity) still open
-  - Release candidate commit/tag not selected
+  - Demo flow rehearsal checklist not finalized
+  - Optional screenshots/GIF not prepared
 - Next review date: `TBD (after validation pass)`
 
