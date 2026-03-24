@@ -8,6 +8,9 @@ on:
 jobs:
   unit:
     runs-on: ubuntu-latest
+    env:
+      # Keep accidental DB calls from hanging unit CI for 30s+.
+      MONGO_URI: mongodb://127.0.0.1:27017/?serverSelectionTimeoutMS=1000&connectTimeoutMS=1000
     strategy:
       matrix:
         python-version: ["3.11"]
