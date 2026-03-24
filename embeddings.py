@@ -12,13 +12,14 @@ from __future__ import annotations
 import math
 import os
 
-from litellm import aembedding
-
 MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
 
 
 async def get_embedding(text: str) -> list[float]:
     """Embed a single text string and return the vector."""
+    # Lazy import keeps module import lightweight for test collection/CI.
+    from litellm import aembedding
+
     response = await aembedding(model=MODEL, input=[text])
     return response.data[0]["embedding"]
 
