@@ -27,7 +27,7 @@ Status values:
 | Quickstart DX | README quickstart replay from clean shell succeeds | IN_PROGRESS | jjones | Needs one clean-shell rehearsal before GO |
 | Quickstart DX | `pytest tests/ -v` succeeds | DONE | jjones | Verified locally on 2026-03-24: 22 passed, 2 skipped |
 | Quickstart DX | `scripts/integration_mongo_smoke.sh` succeeds | DONE | jjones | Verified locally on 2026-03-24 with API health returning `{\"status\":\"ok\"}` |
-| Quickstart DX | `scripts/openclaw_guardrail_smoke.sh` succeeds | DONE | jjones | Verified locally on 2026-03-24: all 3 guardrail cases PASS |
+| Quickstart DX | `scripts/openclaw_guardrail_smoke.sh` succeeds | DONE | jjones | Verified locally on 2026-03-26: all 5 guardrail cases PASS (incl. neighbors + no-write checks) |
 | Quickstart DX | UI works in same-origin and remote API mode | IN_PROGRESS | jjones | API settings + auth header support implemented |
 | Demo readiness | Demo flow documented and rehearsed | IN_PROGRESS | jjones | Rehearsal checklist not finalized |
 | Demo readiness | Optional screenshots/GIF prepared | TODO |  |  |
