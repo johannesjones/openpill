@@ -1,4 +1,4 @@
-# Public Release Dry-Run Status
+# Public Release Dry-Run Status (Internal)
 
 Use this file to track progress before making the repository public.
 

@@ -1,4 +1,4 @@
-# Public Release Checklist
+# Public Release Checklist (Internal)
 
 Use this checklist before changing the GitHub repository visibility from private to public.
 

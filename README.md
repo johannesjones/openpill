@@ -32,8 +32,6 @@ make md-watch ROOT=. INTERVAL=60
 - **Integrations (OpenClaw, MCP, REST, proxy, container pitfalls):** [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md)
 - **Operations (env vars, model policy, hybrid retrieval, auth, backups):** [`docs/OPS.md`](docs/OPS.md)
 - **External A/B protocol and cost caps:** [`docs/AB_PROTOCOL.md`](docs/AB_PROTOCOL.md)
-- **Public release checklist:** [`docs/PUBLIC_READY.md`](docs/PUBLIC_READY.md)
-- **Current release-readiness status:** [`docs/PUBLIC_READY_STATUS.md`](docs/PUBLIC_READY_STATUS.md)
 - **Research and roadmap:** [`RESEARCH_AND_ROADMAP.md`](RESEARCH_AND_ROADMAP.md)
 - **Agent behavior policy for tool-capable agents:** [`AGENTS.md`](AGENTS.md)
 - **Project intent/values:** [`SOUL.md`](SOUL.md)
