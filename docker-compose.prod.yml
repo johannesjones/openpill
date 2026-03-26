@@ -1,0 +1,107 @@
+services:
+  mongodb:
+    image: mongo:7
+    restart: unless-stopped
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    volumes:
+      - mongo_data:/data/db
+      - ./mongo-init-rs.sh:/docker-entrypoint-initdb.d/init-rs.sh:ro
+    healthcheck:
+      test: >
+        mongosh --quiet --eval "
+          try { rs.status().ok } catch(e) {
+            rs.initiate({_id:'rs0', members:[{_id:0, host:'mongodb:27017'}]});
+            1;
+          }
+        "
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks:
+      - backend
+
+  openpill-api:
+    image: python:3.11-slim
+    restart: unless-stopped
+    working_dir: /app
+    volumes:
+      - ./:/app:ro
+    env_file:
+      - .env.production
+    environment:
+      MONGO_URI: mongodb://mongodb:27017/?replicaSet=rs0&directConnection=true
+      MONGO_DB: knowledge_pills_db
+      OPENPILL_API_KEY: ${OPENPILL_API_KEY}
+      EXTRACTOR_MODEL_POLICY: ${EXTRACTOR_MODEL_POLICY:-local_first}
+      JANITOR_MODEL_POLICY: ${JANITOR_MODEL_POLICY:-local_first}
+      AB_GUARDS_ENABLED: ${AB_GUARDS_ENABLED:-true}
+      AB_ALLOW_EXTERNAL: ${AB_ALLOW_EXTERNAL:-false}
+      AB_MAX_EXTERNAL_CALLS: ${AB_MAX_EXTERNAL_CALLS:-20}
+      HYBRID_RETRIEVAL_ENABLED: ${HYBRID_RETRIEVAL_ENABLED:-false}
+    command: >
+      sh -lc "pip install --no-cache-dir -r requirements.txt && python api.py"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3).read()\""]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    networks:
+      - backend
+      - edge
+
+  # Optional: OpenPill MCP service for remote MCP transport.
+  # Keep this disabled unless your host requires SSE MCP.
+  openpill-mcp:
+    image: python:3.11-slim
+    restart: unless-stopped
+    working_dir: /app
+    volumes:
+      - ./:/app:ro
+    env_file:
+      - .env.production
+    environment:
+      MONGO_URI: mongodb://mongodb:27017/?replicaSet=rs0&directConnection=true
+      MONGO_DB: knowledge_pills_db
+    command: >
+      sh -lc "pip install --no-cache-dir -r requirements.txt && python server.py --sse"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    networks:
+      - backend
+      - edge
+    profiles:
+      - mcp
+
+  # Optional: reverse proxy entrypoint.
+  # Replace with your existing ingress if GCP/Hetzner already provides one.
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - openpill-api
+    networks:
+      - edge
+    profiles:
+      - edge
+
+networks:
+  backend:
+    internal: true
+  edge:
+
+volumes:
+  mongo_data:
+  caddy_data:
+  caddy_config:

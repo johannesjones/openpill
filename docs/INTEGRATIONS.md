@@ -32,7 +32,9 @@ Quick validation:
 bash scripts/openclaw_guardrail_smoke.sh
 ```
 
-This executes 3 fixed OpenClaw prompts and fails if `semantic_search` is not called or if memory backend connection errors are detected.
+This executes 5 fixed OpenClaw prompts (including neighbor expansion and read-only no-write checks) and fails if tool expectations are not met or if memory backend connection errors are detected.
+
+For production-oriented VM setups (GCP/Hetzner), see [`docs/DEPLOY_PROD.md`](DEPLOY_PROD.md).
 
 ### Autonomous markdown -> OpenPill ingestion
 

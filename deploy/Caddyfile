@@ -1,0 +1,10 @@
+:80 {
+  redir https://{host}{uri}
+}
+
+# Replace `openpill.example.com` with your real domain.
+openpill.example.com {
+  encode zstd gzip
+
+  reverse_proxy openpill-api:8080
+}

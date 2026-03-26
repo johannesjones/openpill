@@ -31,6 +31,7 @@ make md-watch ROOT=. INTERVAL=60
 
 - **Integrations (OpenClaw, MCP, REST, proxy, container pitfalls):** [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md)
 - **Operations (env vars, model policy, hybrid retrieval, auth, backups):** [`docs/OPS.md`](docs/OPS.md)
+- **Production-ish VM blueprint (GCP/Hetzner):** [`docs/DEPLOY_PROD.md`](docs/DEPLOY_PROD.md)
 - **External A/B protocol and cost caps:** [`docs/AB_PROTOCOL.md`](docs/AB_PROTOCOL.md)
 - **Research and roadmap:** [`RESEARCH_AND_ROADMAP.md`](RESEARCH_AND_ROADMAP.md)
 - **Agent behavior policy for tool-capable agents:** [`AGENTS.md`](AGENTS.md)
