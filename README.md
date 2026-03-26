@@ -2,6 +2,7 @@
 
 Long-term memory layer for agents.
 OpenPill stores distilled memory entries in MongoDB and exposes them via MCP, REST, and an OpenAI-compatible proxy.
+Here, a "pill" means a compact knowledge pill: a small, retrievable unit of useful memory.
 
 ## Start Here
 

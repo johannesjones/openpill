@@ -5,6 +5,7 @@ This file captures the human intent behind OpenPill.
 ## Why This Project Exists
 
 OpenPill exists to give agents durable memory that remains practical, transparent, and affordable for real users.
+A "pill" in OpenPill means a compact knowledge pill: a small, retrievable unit of useful memory.
 
 ## Core Principles
 

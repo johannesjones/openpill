@@ -1,6 +1,7 @@
 # Integrations — OpenPill
 
 How to connect **OpenPill** to editors, agents, and HTTP clients: **OpenClaw**, **MCP (stdio)**, **REST**, and the **OpenAI-compatible proxy**.
+In this project, a "pill" means a compact knowledge pill: a small, retrievable unit of useful memory.
 
 ## When to use MCP vs REST vs proxy
 
