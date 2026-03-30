@@ -4,6 +4,17 @@ Long-term memory layer for agents.
 OpenPill stores distilled memory entries in MongoDB and exposes them via MCP, REST, and an OpenAI-compatible proxy.
 Here, a "pill" means a compact knowledge pill: a small, retrievable unit of useful memory.
 
+## Why Not Markdown-Only Memory?
+
+OpenClaw's markdown memory is great for fast, personal note-taking. OpenPill is for cases where memory must be reliable under load, across agents, and over time.
+
+- **More reliable retrieval:** semantic search and neighbor expansion instead of plain file lookup.
+- **Safer operations:** API/auth boundaries, idempotent ingest, and explicit health checks.
+- **Cost control by design:** local-first model policy with optional external-model guards.
+- **Production readiness:** backup/restore workflows and deployment patterns for VM/cloud usage.
+
+In short: markdown is a good scratchpad; OpenPill is the memory layer when reliability and control matter.
+
 ## Start Here
 
 - **Quick setup:** copy env, start Mongo, install deps, run API/MCP.
