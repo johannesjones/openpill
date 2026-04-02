@@ -37,6 +37,19 @@ This executes 5 fixed OpenClaw prompts (including neighbor expansion and read-on
 
 For production-oriented VM setups (GCP/Hetzner), see [`docs/DEPLOY_PROD.md`](DEPLOY_PROD.md).
 
+## Hermes-Agent
+
+Hermes-Agent has its own bounded prompt memory (`MEMORY.md` + `USER.md`) and session storage. If you want OpenPill as a **durable external memory backend** for Hermes workflows, this repo includes a ready-to-drop Hermes skill template:
+
+- `integrations/hermes/openpill/SKILL.md`
+- `integrations/hermes/openpill/openpill_client.py`
+
+It provides:
+
+- `semantic` retrieval (optional `--hybrid`)
+- neighbor expansion (`neighbors`)
+- idempotent durable ingest (`ingest-text` with `Idempotency-Key`)
+
 ### Autonomous markdown -> OpenPill ingestion
 
 If OpenClaw (or your workflow) keeps memory in markdown files, OpenPill does not ingest those automatically unless you wire a bridge.

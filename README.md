@@ -55,6 +55,10 @@ make md-watch ROOT=. INTERVAL=60
 - **REST (`api.py`)** for HTTP clients, scripts, Actions, and web tooling.
 - **Proxy (`proxy.py`)** for OpenAI-compatible clients that need automatic context injection.
 
+## Agent Integrations
+
+- **Hermes-Agent bridge template (skill + REST client):** see `integrations/hermes/openpill/` and the **Hermes-Agent** section in [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md).
+
 ## Testing
 
 ```bash
