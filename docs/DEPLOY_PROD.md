@@ -115,6 +115,17 @@ docker compose -f docker-compose.prod.yml --profile mcp up -d
 
 Use these as baseline runbook steps for both presets.
 
+### Hermes-Agent bridge quick demo
+
+If you run Hermes and want OpenPill as a durable external memory backend, you can use the included bridge template in `integrations/hermes/openpill/`.
+
+Quick local check (against a running OpenPill API):
+
+```bash
+python3 integrations/hermes/openpill/openpill_client.py semantic "idempotency key" --limit 5
+python3 integrations/hermes/openpill/openpill_client.py neighbors "<pill_id>"
+```
+
 ### 1) Daily Mongo backup
 
 Create compressed dump (inside docker network, written on host):
