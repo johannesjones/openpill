@@ -29,6 +29,7 @@ Environment:
     EXTRACTOR_RELATED_THRESHOLD           Min similarity to auto-link related pills (default 0.88).
     EXTRACTOR_RELATED_MAX_LINKS           Max neighbor links per new pill (default 3).
     EXTRACTOR_LINK_ON_INSERT              If true, link new pills to similar same-category neighbors (default true).
+    OPENPILL_MERGE_SAME_SOURCE            If true (default), near-duplicate with identical source.reference updates existing pill instead of skipping.
 """
 
 from __future__ import annotations
@@ -39,7 +40,10 @@ import os
 import re
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
+from bson import ObjectId
+from bson.errors import InvalidId
 from pydantic import BaseModel, Field, ValidationError
 
 from db import close, get_collection
@@ -433,6 +437,34 @@ async def find_near_duplicates(
     return duplicates
 
 
+def _merge_same_source_enabled() -> bool:
+    return os.getenv("OPENPILL_MERGE_SAME_SOURCE", "true").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+async def _duplicate_matching_source(
+    col,
+    dupes: list[dict],
+    expected_reference: str,
+) -> dict | None:
+    """First near-duplicate whose ``source.reference`` equals ``expected_reference``."""
+    for d in dupes:
+        try:
+            oid = ObjectId(d["id"])
+        except (InvalidId, TypeError, KeyError):
+            continue
+        doc = await col.find_one({"_id": oid}, {"source": 1})
+        if not doc:
+            continue
+        ref = (doc.get("source") or {}).get("reference")
+        if ref == expected_reference:
+            return d
+    return None
+
+
 async def run_extraction(
     text: str,
     source_reference: str,
@@ -457,9 +489,11 @@ async def run_extraction(
     print(f"Extracted {len(facts)} candidate pills from text.\n")
 
     inserted = []
+    merged_same_source: list[dict] = []
     skipped_confidence = []
     skipped_duplicate = []
     skipped_short = []
+    expected_ref = f"extractor:{source_reference}"
 
     for fact in facts[:max_pills]:
         if fact.confidence < min_confidence:
@@ -475,6 +509,48 @@ async def run_extraction(
         dupes = await find_near_duplicates(embedding, col)
 
         if dupes:
+            merge_hit = None
+            if _merge_same_source_enabled():
+                merge_hit = await _duplicate_matching_source(col, dupes, expected_ref)
+            if merge_hit is not None:
+                if dry_run:
+                    print(
+                        f"  WOULD UPDATE (same source, sim={merge_hit['similarity']}): {fact.title} → {merge_hit['id']}"
+                    )
+                    merged_same_source.append(
+                        {
+                            "title": fact.title,
+                            "pill_id": merge_hit["id"],
+                            "similarity": merge_hit["similarity"],
+                        }
+                    )
+                else:
+                    now = datetime.now(timezone.utc)
+                    await col.update_one(
+                        {"_id": ObjectId(merge_hit["id"])},
+                        {
+                            "$set": {
+                                "title": fact.title,
+                                "content": fact.content,
+                                "category": fact.category,
+                                "tags": fact.tags,
+                                "confidence": fact.confidence,
+                                "embedding": embedding,
+                                "updated_at": now,
+                            }
+                        },
+                    )
+                    merged_same_source.append(
+                        {
+                            "title": fact.title,
+                            "pill_id": merge_hit["id"],
+                            "similarity": merge_hit["similarity"],
+                        }
+                    )
+                    print(
+                        f"  UPDATED (same source, sim={merge_hit['similarity']}): {fact.title} (id: {merge_hit['id']})"
+                    )
+                continue
             skipped_duplicate.append(
                 {
                     "title": fact.title,
@@ -524,6 +600,7 @@ async def run_extraction(
     print(f"\n{'=' * 60}")
     print("  Summary")
     print(f"  {'Would insert' if dry_run else 'Inserted'}: {len(inserted)}")
+    print(f"  {'Would update' if dry_run else 'Updated'} (same source): {len(merged_same_source)}")
     print(f"  Skipped (low confidence): {len(skipped_confidence)}")
     print(f"  Skipped (too short):     {len(skipped_short)}")
     print(f"  Skipped (duplicate):     {len(skipped_duplicate)}")
@@ -533,6 +610,7 @@ async def run_extraction(
 
     return {
         "inserted": inserted,
+        "merged_same_source": merged_same_source,
         "skipped_confidence": skipped_confidence,
         "skipped_duplicate": skipped_duplicate,
         "skipped_short": skipped_short,
@@ -599,9 +677,11 @@ async def run_conversation_extraction(
     print(f"Extracted {len(facts)} candidate pills from summary.\n")
 
     inserted = []
+    merged_same_source: list[dict] = []
     skipped_confidence = []
     skipped_duplicate = []
     skipped_short = []
+    expected_ref = f"conversation:{source_reference}"
 
     for fact in facts[:max_pills]:
         if fact.confidence < min_confidence:
@@ -617,6 +697,48 @@ async def run_conversation_extraction(
         dupes = await find_near_duplicates(embedding, col, threshold=conv_threshold)
 
         if dupes:
+            merge_hit = None
+            if _merge_same_source_enabled():
+                merge_hit = await _duplicate_matching_source(col, dupes, expected_ref)
+            if merge_hit is not None:
+                if dry_run:
+                    print(
+                        f"  WOULD UPDATE (same source, sim={merge_hit['similarity']}): {fact.title} → {merge_hit['id']}"
+                    )
+                    merged_same_source.append(
+                        {
+                            "title": fact.title,
+                            "pill_id": merge_hit["id"],
+                            "similarity": merge_hit["similarity"],
+                        }
+                    )
+                else:
+                    now = datetime.now(timezone.utc)
+                    await col.update_one(
+                        {"_id": ObjectId(merge_hit["id"])},
+                        {
+                            "$set": {
+                                "title": fact.title,
+                                "content": fact.content,
+                                "category": fact.category,
+                                "tags": fact.tags,
+                                "confidence": fact.confidence,
+                                "embedding": embedding,
+                                "updated_at": now,
+                            }
+                        },
+                    )
+                    merged_same_source.append(
+                        {
+                            "title": fact.title,
+                            "pill_id": merge_hit["id"],
+                            "similarity": merge_hit["similarity"],
+                        }
+                    )
+                    print(
+                        f"  UPDATED (same source, sim={merge_hit['similarity']}): {fact.title} (id: {merge_hit['id']})"
+                    )
+                continue
             skipped_duplicate.append(
                 {
                     "title": fact.title,
@@ -666,6 +788,7 @@ async def run_conversation_extraction(
     print(f"\n{'=' * 60}")
     print("  Summary")
     print(f"  {'Would insert' if dry_run else 'Inserted'}: {len(inserted)}")
+    print(f"  {'Would update' if dry_run else 'Updated'} (same source): {len(merged_same_source)}")
     print(f"  Skipped (low confidence): {len(skipped_confidence)}")
     print(f"  Skipped (too short):     {len(skipped_short)}")
     print(f"  Skipped (duplicate):     {len(skipped_duplicate)}")
@@ -675,6 +798,7 @@ async def run_conversation_extraction(
 
     return {
         "inserted": inserted,
+        "merged_same_source": merged_same_source,
         "skipped_confidence": skipped_confidence,
         "skipped_duplicate": skipped_duplicate,
         "skipped_short": skipped_short,

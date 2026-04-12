@@ -19,12 +19,14 @@ def test_ingest_response_has_expected_keys():
     """Document expected JSON shape from extractor runs (for API/MCP clients)."""
     sample = {
         "inserted": [],
+        "merged_same_source": [],
         "skipped_confidence": [],
         "skipped_duplicate": [],
         "skipped_short": [],
         "stats": {},
     }
     assert "inserted" in sample
+    assert "merged_same_source" in sample
     assert "skipped_duplicate" in sample
     dup = sample["skipped_duplicate"]
     assert isinstance(dup, list)

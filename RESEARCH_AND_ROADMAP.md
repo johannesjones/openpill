@@ -47,6 +47,9 @@ Treat these as **fast-moving**; validate claims against experiments, code, and b
 - **A Survey on the Memory Mechanism of Large Language Model based Agents** — [arXiv:2404.13501](https://arxiv.org/abs/2404.13501)  
   Broader framing of agent memory mechanisms.
 
+- **LLM-empowered knowledge graph construction: A survey** — [arXiv:2510.20345](https://arxiv.org/abs/2510.20345)  
+  Classical pipeline **ontology → extraction → fusion**; **schema-based** vs **schema-free** paradigms; outlook on **dynamic knowledge for agentic systems** and multimodal KGs. Useful as a **product lens** for what to adopt in small steps (see Phase B2 below).
+
 ### Curated lists
 
 - **Awesome-GraphMemory** (GitHub: `DEEP-PolyU/Awesome-GraphMemory`) — papers, tools, and benchmarks for graph-based agent memory.
@@ -76,6 +79,20 @@ This is a solid **extract → embed → dedupe → retrieve** layer—aligned wi
 
 ---
 
+## LLM-KG survey ↔ OpenPill (what to borrow, without building a research KG)
+
+The [2510.20345](https://arxiv.org/abs/2510.20345) survey frames **KG construction** as ontology engineering, **knowledge extraction**, and **knowledge fusion**. OpenPill stays a **pragmatic agent memory layer**; the takeaway is **which stages** to strengthen first:
+
+| Survey stage | OpenPill analogue | Adoption stance |
+|--------------|-------------------|-----------------|
+| Ontology / schema | Categories, tags, `relations[].kind` | **Light**: canonical relation vocabulary + optional entity keys later—not a full OWL stack |
+| Extraction | `extractor.py`, ingest paths | **Strengthen**: stricter structured output, chunking for long inputs, optional validation pass |
+| Fusion | Dedup, `conflict_count`, relations | **Strengthen**: merge rules keyed on `source_reference`, explicit conflict/supersedes workflows |
+
+**Strategy:** **Phase B2** = minimal schema + fusion first; deeper graph/RL remains Phase C/D.
+
+---
+
 ## Roadmap (suggested phases)
 
 ### Phase A — Solidify the current model (near-term)
@@ -89,6 +106,18 @@ This is a solid **extract → embed → dedupe → retrieve** layer—aligned wi
 - [x] **Explicit links** between pills (`relations[]` with `target_id` + `kind`: related, supersedes, same_topic) stored in MongoDB; auto-link on ingest in a similarity band  
 - [x] Lightweight **graph-aware retrieval**: `GET /pills/{id}/neighbors`, semantic search `expand_neighbors`, MCP `get_pill_neighbors`, optional `PROXY_EXPAND_NEIGHBORS`  
 - [ ] Optional **entity extraction** on ingest to attach stable entity keys for linking — **deferred** (schema `entities[]` + suggest-links flow; track as separate change when Phase B graph usage is stable)  
+
+### Phase B2 — Minimal schema & fusion (KG-survey-inspired, near-term)
+
+Prioritised concrete work—**small scope**, high leverage. Suggested order:
+
+- [x] **Canonical relation vocabulary** — Document and enforce a **closed or curated set** of `PillRelationKind` values (plus a safe fallback like `related`); reject or normalise unknown kinds at ingest/API boundaries where practical. *(Implemented: `normalize_relation_kind`, `sanitize_relations`, janitor rewire normalization; see `models.py`, `pill_relations.py`, `docs/OPS.md`.)*
+- [x] **Merge / dedup by provenance** — When a new ingest matches an existing pill **strongly** and shares the same **`source.reference`** as the extractor would use, **update** that pill instead of skipping. *(Implemented: `OPENPILL_MERGE_SAME_SOURCE`, `merged_same_source` in ingest responses; see `extractor.py`, `docs/OPS.md`.)*
+- [ ] **Conflict & supersession UX** — Make **contradictions** first-class: ensure `conflicts` edges + janitor/API paths are **documented and discoverable**; optional tool or endpoint to **list unresolved conflicts** for agents or humans.
+- [ ] **Retrieval smoke / golden queries** — A **small fixed set** of queries (e.g. 20–50) with expected pill IDs or keywords; run in CI or `make` target to catch retrieval regressions (hybrid on/off).
+- [ ] **Stricter extraction schema (optional)** — Structured LLM output (entity / relation / confidence / span hints) before mapping to pills; keep backward compatibility for existing clients.
+
+**Later (still minimal):** chunking for long ingest text; light validation (“is this supported by the source excerpt?”) only on high-risk paths.
 
 ### Phase C — Graph-first memory (aspirational)
 
@@ -142,3 +171,4 @@ That gives you **explainable “why these two memories are connected”** and a 
 |------|------|
 | 2026-02-26 | Initial research synthesis + phased roadmap |
 | 2026-02-26 | Added “How to proceed with the app you have” |
+| 2026-04-02 | Added arXiv:2510.20345 (LLM-KG survey) mapping + Phase B2 (minimal schema & fusion) |

@@ -16,12 +16,31 @@ from pydantic import BaseModel, Field
 
 
 class PillRelationKind(str, Enum):
-    """Edge type between two knowledge pills (Phase B graph links)."""
+    """Edge type between two knowledge pills (Phase B graph links).
+
+    Canonical values (store only these in MongoDB):
+    ``related``, ``supersedes``, ``same_topic``, ``conflicts_with``.
+    Unknown strings from legacy data normalize to ``related`` (see ``normalize_relation_kind``).
+    """
 
     RELATED = "related"
     SUPERSEDES = "supersedes"
     SAME_TOPIC = "same_topic"
     CONFLICTS_WITH = "conflicts_with"
+
+
+def normalize_relation_kind(raw: str | None) -> PillRelationKind:
+    """Map a string to a canonical ``PillRelationKind``; unknown → ``related``."""
+    if raw is None or not str(raw).strip():
+        return PillRelationKind.RELATED
+    s = str(raw).strip().lower().replace("-", "_")
+    for kind in PillRelationKind:
+        if kind.value == s:
+            return kind
+    return PillRelationKind.RELATED
+
+
+CANONICAL_RELATION_KIND_VALUES: tuple[str, ...] = tuple(e.value for e in PillRelationKind)
 
 
 class PillRelation(BaseModel):

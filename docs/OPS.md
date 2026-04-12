@@ -82,6 +82,28 @@
 - The same key with a **different body** returns **409 Conflict** (client must use a new key).
 - Records live in collection **`idempotency_keys`** with a TTL on `created_at` (default **72 hours**, override with **`IDEMPOTENCY_TTL_SECONDS`**). Clients should only retry with the same key when the request body is identical.
 
+## Pill graph edges (canonical relation kinds)
+
+Stored on each pill as `relations[]` with `{ "target_id", "kind" }`. Allowed **`kind`** values:
+
+- `related`
+- `supersedes`
+- `same_topic`
+- `conflicts_with`
+
+Unknown values in legacy data are **normalized to `related`** when relations are rewritten (e.g. janitor merge). New writes via the REST models should use only these strings.
+
+## Same-source merge on ingest (dedup → update)
+
+When **`OPENPILL_MERGE_SAME_SOURCE`** is `true` (default), ingest runs compare near-duplicates to the pill’s **`source.reference`**:
+
+- Document ingest uses `extractor:<source_reference>`.
+- Conversation ingest uses `conversation:<source_reference>`.
+
+If the **best** near-duplicate (above the usual duplicate threshold) belongs to the **same** reference, OpenPill **updates** that document (title, content, category, tags, confidence, embedding, `updated_at`) instead of skipping as a duplicate. The JSON response includes **`merged_same_source`** (list of `{ title, pill_id, similarity }`) alongside **`inserted`**.
+
+Set **`OPENPILL_MERGE_SAME_SOURCE=false`** to restore “skip all duplicates” behavior.
+
 ## Replica set
 
 - Change streams (`watchdog.py`) require a **replica set**. The provided `docker-compose.yml` configures one for local dev.

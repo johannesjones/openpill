@@ -12,7 +12,31 @@ from bson import ObjectId
 from bson.errors import InvalidId
 
 from embeddings import cosine_similarity
-from models import PillRelationKind
+from models import PillRelationKind, normalize_relation_kind
+
+
+def sanitize_relations(relations: list[dict] | None) -> list[dict]:
+    """
+    Normalize relation ``kind`` strings and drop invalid/duplicate (target_id, kind) pairs.
+    First occurrence wins.
+    """
+    if not relations:
+        return []
+    out: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for r in relations:
+        if not isinstance(r, dict):
+            continue
+        tid = r.get("target_id")
+        if not tid:
+            continue
+        kind = normalize_relation_kind(r.get("kind"))
+        key = (str(tid), kind.value)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"target_id": str(tid), "kind": kind.value})
+    return out
 
 
 def relation_doc(target_id: str, kind: PillRelationKind) -> dict:
@@ -291,7 +315,7 @@ async def rewire_relations_on_merge(
     merged: list[dict] = []
     seen_target: set[str] = set()
 
-    def _add_edge(tid: str, kind: str) -> None:
+    def _add_edge(tid: str, kind_raw: str | None) -> None:
         if not tid or tid == new_id:
             return
         if tid in orig_set:
@@ -301,6 +325,7 @@ async def rewire_relations_on_merge(
         if tid in seen_target:
             return
         seen_target.add(tid)
+        kind = normalize_relation_kind(kind_raw).value
         merged.append({"target_id": tid, "kind": kind})
 
     for oid in oids_orig:
@@ -313,7 +338,9 @@ async def rewire_relations_on_merge(
                 continue
             if tid in orig_set:
                 tid = new_id
-            _add_edge(tid, r.get("kind", "related"))
+            _add_edge(tid, r.get("kind"))
+
+    merged = sanitize_relations(merged)
 
     await col.update_one(
         {"_id": oid_new},
@@ -344,7 +371,9 @@ async def rewire_relations_on_merge(
             if tid in seen_t:
                 continue
             seen_t.add(tid)
-            new_rels.append({"target_id": tid, "kind": r.get("kind", "related")})
+            kind = normalize_relation_kind(r.get("kind")).value
+            new_rels.append({"target_id": tid, "kind": kind})
+        new_rels = sanitize_relations(new_rels)
         await col.update_one(
             {"_id": doc["_id"]},
             {"$set": {"relations": new_rels, "updated_at": now}},
