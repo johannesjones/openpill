@@ -109,6 +109,17 @@ If the **best** near-duplicate (above the usual duplicate threshold) belongs to 
 
 Set **`OPENPILL_MERGE_SAME_SOURCE=false`** to restore “skip all duplicates” behavior.
 
+## Strict extraction schema (optional)
+
+When **`OPENPILL_STRICT_EXTRACTION_SCHEMA=true`**, document and conversation extractors use prompts that require additional JSON fields per pill:
+
+- **`entities`** — short entity names (0–8)
+- **`relation_hints`** — suggested links to other concepts by name, each with `target_concept` and `kind` (`related`, `supersedes`, `same_topic`, `conflicts_with`; unknown kinds normalize to `related` on save)
+- **`evidence_quote`** — short verbatim snippet from the source (or `null`)
+- **`rationale`** — one line explaining why the fact is worth storing
+
+Persisted on the MongoDB document as **`extraction_meta`** (omitted or `null` when absent). Default **`false`** preserves the original compact schema and full backward compatibility for LLM output and clients.
+
 ## Retrieval golden queries (regression)
 
 Offline checks for **semantic ranking, category filters, neighbor expansion, and superseded metadata** use a fixed corpus and **mocked embeddings** (no LLM or DB required):

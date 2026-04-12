@@ -72,6 +72,34 @@ class PillSource(BaseModel):
     )
 
 
+class RelationConceptHint(BaseModel):
+    """Suggested link to another concept by name (not resolved to a pill id)."""
+
+    target_concept: str = Field(..., min_length=1, max_length=200)
+    kind: str = Field(
+        default="related",
+        max_length=40,
+        description="Intent: related | supersedes | same_topic | conflicts_with (normalized on save)",
+    )
+
+
+class ExtractionProvenance(BaseModel):
+    """Structured audit fields from strict-schema LLM extraction (optional)."""
+
+    entities: list[str] = Field(default_factory=list, max_length=24)
+    relation_hints: list[RelationConceptHint] = Field(default_factory=list, max_length=12)
+    evidence_quote: Optional[str] = Field(
+        default=None,
+        max_length=500,
+        description="Short verbatim snippet from the source text supporting the pill",
+    )
+    rationale: Optional[str] = Field(
+        default=None,
+        max_length=400,
+        description="One-line reason this fact was extracted",
+    )
+
+
 class KnowledgePill(BaseModel):
     """
     Core schema for a single Knowledge Pill in MongoDB.
@@ -104,6 +132,10 @@ class KnowledgePill(BaseModel):
     relations: list[PillRelation] = Field(
         default_factory=list,
         description="Outgoing edges to related pills (1-hop graph links)",
+    )
+    extraction_meta: Optional[ExtractionProvenance] = Field(
+        default=None,
+        description="Optional structured extraction metadata (strict schema mode)",
     )
 
     def to_mongo(self) -> dict:

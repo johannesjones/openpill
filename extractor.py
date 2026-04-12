@@ -30,6 +30,7 @@ Environment:
     EXTRACTOR_RELATED_MAX_LINKS           Max neighbor links per new pill (default 3).
     EXTRACTOR_LINK_ON_INSERT              If true, link new pills to similar same-category neighbors (default true).
     OPENPILL_MERGE_SAME_SOURCE            If true (default), near-duplicate with identical source.reference updates existing pill instead of skipping.
+    OPENPILL_STRICT_EXTRACTION_SCHEMA     If true, use stricter LLM JSON (entities, relation_hints, evidence_quote, rationale) and persist extraction_meta on pills.
 """
 
 from __future__ import annotations
@@ -44,11 +45,19 @@ from datetime import datetime, timezone
 
 from bson import ObjectId
 from bson.errors import InvalidId
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from db import close, get_collection
 from embeddings import cosine_similarity, embed_text_for_pill, get_embedding
-from models import KnowledgePill, PillRelationKind, PillSource, SourceType
+from models import (
+    ExtractionProvenance,
+    KnowledgePill,
+    PillRelationKind,
+    PillSource,
+    RelationConceptHint,
+    SourceType,
+    normalize_relation_kind,
+)
 from pill_relations import add_bidirectional_relation, find_related_candidates
 
 MODEL = os.getenv("EXTRACTOR_MODEL", "gpt-4o-mini")
@@ -165,6 +174,14 @@ def _link_on_insert() -> bool:
     return os.getenv("EXTRACTOR_LINK_ON_INSERT", "true").lower() in ("1", "true", "yes")
 
 
+def _strict_extraction_schema_enabled() -> bool:
+    return os.getenv("OPENPILL_STRICT_EXTRACTION_SCHEMA", "false").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
 def normalize_category(category: str) -> str:
     """Map LLM category to a canonical allowed value or 'other'."""
     if not category or not category.strip():
@@ -191,6 +208,9 @@ def adjust_confidence(fact: "ExtractedFact") -> float:
     # Slight penalty: very short content
     if len(fact.content.strip()) < 40:
         conf = max(0.0, conf - 0.05)
+    q = getattr(fact, "evidence_quote", None)
+    if q and str(q).strip():
+        conf = min(1.0, conf + 0.02)
     return round(conf, 2)
 
 
@@ -200,11 +220,17 @@ def adjust_confidence(fact: "ExtractedFact") -> float:
 
 
 class ExtractedFact(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     title: str
     content: str
     category: str
     tags: list[str] = Field(default_factory=list)
     confidence: float = Field(default=0.9, ge=0.0, le=1.0)
+    entities: list[str] = Field(default_factory=list, max_length=24)
+    relation_hints: list[RelationConceptHint] = Field(default_factory=list, max_length=12)
+    evidence_quote: str | None = Field(default=None, max_length=500)
+    rationale: str | None = Field(default=None, max_length=400)
 
 
 class ExtractionResult(BaseModel):
@@ -260,6 +286,48 @@ Return ONLY valid JSON matching this schema (no markdown, no explanation):
 If the text contains no extractable knowledge, return: {"pills": []}\
 """
 
+STRICT_EXTRACTION_SYSTEM_PROMPT = """\
+You are a Knowledge Extractor for an AI agent's long-term memory.
+You will receive raw text (chat transcript, notes, documentation, etc.).
+
+Your task: extract atomic, distilled facts as knowledge pills.
+Each pill should be a single, self-contained piece of knowledge.
+
+Rules:
+- Be selective: only extract genuinely useful, non-obvious facts.
+- Each pill must stand alone without needing the original context.
+- Assign a confidence score (0.0-1.0) based on how certain the fact is.
+- Category: python, javascript, architecture, devops, databases, security, ai, networking, or other.
+- Keep titles concise (<100 chars) and content under 500 chars.
+- For every pill, add structured fields (use [] or null where unknown):
+  - entities: 0–8 short entity names mentioned in the fact (e.g. "Docker", "MongoDB").
+  - relation_hints: 0–6 suggested links to OTHER concepts by name; each item has
+    target_concept (string) and kind, one of: related, supersedes, same_topic, conflicts_with.
+  - evidence_quote: a short verbatim snippet from the source text supporting the pill (<= 240 chars), or null if none.
+  - rationale: one line explaining why this fact is worth remembering (<= 200 chars).
+
+Do NOT extract: common knowledge, filler, greetings, or code without explanation.
+
+Return ONLY valid JSON (no markdown, no explanation):
+{
+  "pills": [
+    {
+      "title": "<concise title>",
+      "content": "<the distilled fact>",
+      "category": "<category>",
+      "tags": ["<tag1>"],
+      "confidence": 0.9,
+      "entities": ["<entity>"],
+      "relation_hints": [{"target_concept": "<name>", "kind": "related"}],
+      "evidence_quote": "<snippet or null>",
+      "rationale": "<one line>"
+    }
+  ]
+}
+
+If nothing extractable: {"pills": []}\
+"""
+
 CONVERSATION_EXTRACTION_SYSTEM_PROMPT = """\
 You are a Knowledge Extractor for an AI agent's long-term memory.
 The input is a SUMMARY of a conversation (not the full transcript).
@@ -284,6 +352,76 @@ Bad example: title "We talked about the project", content "The user and assistan
 Return ONLY valid JSON: {"pills": [{"title": "...", "content": "...", "category": "...", "tags": [], "confidence": 0.9}]}
 If nothing extractable: {"pills": []}\
 """
+
+STRICT_CONVERSATION_EXTRACTION_SYSTEM_PROMPT = """\
+You are a Knowledge Extractor for an AI agent's long-term memory.
+The input is a SUMMARY of a conversation (and possibly a short transcript excerpt).
+
+Extract atomic, distilled facts as knowledge pills. Prefer decisions, gotchas, and concrete tool/version choices.
+
+Rules:
+- Be selective; each pill must stand alone.
+- confidence 0.0-1.0; category: python, javascript, architecture, devops, databases, security, ai, networking, or other.
+- Titles <100 chars, content under 500 chars.
+- For each pill include structured fields:
+  - entities: 0–8 entity names (strings).
+  - relation_hints: 0–6 items with target_concept and kind in
+    related | supersedes | same_topic | conflicts_with.
+  - evidence_quote: short verbatim snippet from the input supporting the pill (<= 240 chars), or null.
+  - rationale: one line why this is worth remembering (<= 200 chars).
+
+Return ONLY valid JSON:
+{
+  "pills": [
+    {
+      "title": "...",
+      "content": "...",
+      "category": "...",
+      "tags": [],
+      "confidence": 0.9,
+      "entities": [],
+      "relation_hints": [],
+      "evidence_quote": null,
+      "rationale": "..."
+    }
+  ]
+}
+If nothing extractable: {"pills": []}\
+"""
+
+
+def _extraction_provenance_from_fact(fact: ExtractedFact) -> ExtractionProvenance | None:
+    """Build persisted metadata when any structured field is present."""
+    entities = [
+        str(e).strip()[:120]
+        for e in fact.entities
+        if str(e).strip()
+    ][:24]
+    hints: list[RelationConceptHint] = []
+    for h in fact.relation_hints:
+        tc = h.target_concept.strip()
+        if not tc:
+            continue
+        hints.append(
+            RelationConceptHint(
+                target_concept=tc[:200],
+                kind=normalize_relation_kind(h.kind).value,
+            )
+        )
+    eq = (fact.evidence_quote or "").strip() or None
+    if eq:
+        eq = eq[:500]
+    rat = (fact.rationale or "").strip() or None
+    if rat:
+        rat = rat[:400]
+    if not entities and not hints and not eq and not rat:
+        return None
+    return ExtractionProvenance(
+        entities=entities,
+        relation_hints=hints,
+        evidence_quote=eq,
+        rationale=rat,
+    )
 
 
 def _resolve_model_for_task(
@@ -355,13 +493,30 @@ async def extract_facts(
     *,
     system_prompt: str | None = None,
     model: str | None = None,
+    strict_schema: bool | None = None,
 ) -> list[ExtractedFact]:
     """Send raw text to the LLM and parse extracted facts. Retries once on JSON parse failure."""
-    prompt = system_prompt if system_prompt is not None else EXTRACTION_SYSTEM_PROMPT
+    strict_eff = (
+        _strict_extraction_schema_enabled() if strict_schema is None else strict_schema
+    )
+    if system_prompt is not None:
+        prompt = system_prompt
+    elif strict_eff:
+        prompt = STRICT_EXTRACTION_SYSTEM_PROMPT
+    else:
+        prompt = EXTRACTION_SYSTEM_PROMPT
     messages: list[dict] = [
         {"role": "system", "content": prompt},
         {"role": "user", "content": text},
     ]
+    retry_hint = (
+        "Return ONLY a single JSON object with a 'pills' array. "
+        "Each pill must include title, content, category, tags, confidence, "
+        "entities, relation_hints, evidence_quote, rationale (use [] or null where empty). "
+        "No markdown."
+        if strict_eff
+        else "Your previous response was not valid JSON. Return ONLY a single JSON object with a 'pills' array; no markdown, no explanation."
+    )
     for attempt in range(2):
         from litellm import acompletion
 
@@ -378,10 +533,7 @@ async def extract_facts(
         except (ValidationError, ValueError) as e:
             if attempt == 0:
                 messages.append({"role": "assistant", "content": raw})
-                messages.append({
-                    "role": "user",
-                    "content": "Your previous response was not valid JSON. Return ONLY a single JSON object with a 'pills' array; no markdown, no explanation.",
-                })
+                messages.append({"role": "user", "content": retry_hint})
                 continue
             raise ValueError(f"Failed to parse extraction JSON after retry: {e}") from e
     return []
@@ -482,7 +634,8 @@ async def run_extraction(
     print(f"  mode: {'DRY RUN' if dry_run else 'INSERT'}")
     print(f"{'=' * 60}\n")
 
-    facts = await extract_facts(text, model=model_decision.model)
+    strict = _strict_extraction_schema_enabled()
+    facts = await extract_facts(text, model=model_decision.model, strict_schema=strict)
     for f in facts:
         f.category = normalize_category(f.category)
         f.confidence = adjust_confidence(f)
@@ -526,6 +679,7 @@ async def run_extraction(
                     )
                 else:
                     now = datetime.now(timezone.utc)
+                    prov = _extraction_provenance_from_fact(fact)
                     await col.update_one(
                         {"_id": ObjectId(merge_hit["id"])},
                         {
@@ -537,6 +691,9 @@ async def run_extraction(
                                 "confidence": fact.confidence,
                                 "embedding": embedding,
                                 "updated_at": now,
+                                "extraction_meta": prov.model_dump(mode="json")
+                                if prov
+                                else None,
                             }
                         },
                     )
@@ -565,6 +722,7 @@ async def run_extraction(
             print(f"  WOULD INSERT: {fact.title} [{fact.category}] (conf={fact.confidence:.2f})")
             inserted.append(fact.title)
         else:
+            prov = _extraction_provenance_from_fact(fact)
             pill = KnowledgePill(
                 title=fact.title,
                 content=fact.content,
@@ -573,6 +731,7 @@ async def run_extraction(
                 source=PillSource(type=SourceType.DOCUMENT, reference=f"extractor:{source_reference}"),
                 confidence=fact.confidence,
                 embedding=embedding,
+                extraction_meta=prov,
             )
             result = await col.insert_one(pill.to_mongo())
             new_id = result.inserted_id
@@ -666,10 +825,17 @@ async def run_conversation_extraction(
         excerpt_used = True
 
     conv_threshold = _get_duplicate_threshold(for_conversation=True)
+    strict = _strict_extraction_schema_enabled()
+    conv_prompt = (
+        STRICT_CONVERSATION_EXTRACTION_SYSTEM_PROMPT
+        if strict
+        else CONVERSATION_EXTRACTION_SYSTEM_PROMPT
+    )
     facts = await extract_facts(
         extraction_input,
-        system_prompt=CONVERSATION_EXTRACTION_SYSTEM_PROMPT,
+        system_prompt=conv_prompt,
         model=extraction_model.model,
+        strict_schema=strict,
     )
     for f in facts:
         f.category = normalize_category(f.category)
@@ -714,6 +880,7 @@ async def run_conversation_extraction(
                     )
                 else:
                     now = datetime.now(timezone.utc)
+                    prov = _extraction_provenance_from_fact(fact)
                     await col.update_one(
                         {"_id": ObjectId(merge_hit["id"])},
                         {
@@ -725,6 +892,9 @@ async def run_conversation_extraction(
                                 "confidence": fact.confidence,
                                 "embedding": embedding,
                                 "updated_at": now,
+                                "extraction_meta": prov.model_dump(mode="json")
+                                if prov
+                                else None,
                             }
                         },
                     )
@@ -753,6 +923,7 @@ async def run_conversation_extraction(
             print(f"  WOULD INSERT: {fact.title} [{fact.category}] (conf={fact.confidence:.2f})")
             inserted.append(fact.title)
         else:
+            prov = _extraction_provenance_from_fact(fact)
             pill = KnowledgePill(
                 title=fact.title,
                 content=fact.content,
@@ -761,6 +932,7 @@ async def run_conversation_extraction(
                 source=PillSource(type=SourceType.CHAT, reference=f"conversation:{source_reference}"),
                 confidence=fact.confidence,
                 embedding=embedding,
+                extraction_meta=prov,
             )
             result = await col.insert_one(pill.to_mongo())
             new_id = result.inserted_id
