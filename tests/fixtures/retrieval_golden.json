@@ -1,0 +1,170 @@
+{
+  "version": 1,
+  "description": "Offline semantic retrieval checks: mock embeddings are one-hot by pill axis; query_axis picks the matching unit vector.",
+  "pills": [
+    {
+      "axis": 0,
+      "title": "Docker Layer Caching",
+      "category": "devops",
+      "content": "Docker images use layer caching; order Dockerfile instructions for cache hits.",
+      "relations": []
+    },
+    {
+      "axis": 1,
+      "title": "Python GIL and Concurrency",
+      "category": "python",
+      "content": "The GIL affects CPU-bound threading; use multiprocessing for parallelism.",
+      "relations": []
+    },
+    {
+      "axis": 2,
+      "title": "MCP – Model Context Protocol Basics",
+      "category": "architecture",
+      "content": "MCP exposes tools and resources to AI clients such as Cursor.",
+      "relations": [{ "target_axis": 4, "kind": "related" }]
+    },
+    {
+      "axis": 3,
+      "title": "MongoDB TTL Indexes",
+      "category": "devops",
+      "content": "TTL indexes expire documents after expireAfterSeconds.",
+      "relations": []
+    },
+    {
+      "axis": 4,
+      "title": "Plan-Execute-Observe Loop",
+      "category": "architecture",
+      "content": "Agent loop: plan, act, observe; used in autonomous tooling.",
+      "relations": []
+    },
+    {
+      "axis": 5,
+      "title": "Idempotency Keys for Ingest",
+      "category": "architecture",
+      "content": "POST ingest supports Idempotency-Key to safely retry identical bodies.",
+      "relations": []
+    },
+    {
+      "axis": 6,
+      "title": "Semantic Search over Pills",
+      "category": "architecture",
+      "content": "Vector cosine similarity ranks active pills for natural language queries.",
+      "relations": []
+    },
+    {
+      "axis": 7,
+      "title": "Graph Neighbors and Relations",
+      "category": "architecture",
+      "content": "Pills link via relations array with target_id and kind for graph-aware retrieval.",
+      "relations": []
+    },
+    {
+      "axis": 8,
+      "title": "Janitor Consolidation",
+      "category": "architecture",
+      "content": "Janitor detects contradictions and can merge or add conflicts_with edges.",
+      "relations": []
+    },
+    {
+      "axis": 9,
+      "title": "API Key Authentication",
+      "category": "architecture",
+      "content": "Optional Bearer token or X-API-Key protects routes when OPENPILL_API_KEY is set.",
+      "relations": []
+    },
+    {
+      "axis": 10,
+      "title": "Conflict Relations Between Pills",
+      "category": "memory",
+      "content": "conflicts_with edges mark contradictory memories for review.",
+      "relations": []
+    },
+    {
+      "axis": 11,
+      "title": "Long-Term Fact Extraction",
+      "category": "architecture",
+      "content": "Extractor turns transcripts into atomic knowledge pills with confidence.",
+      "relations": []
+    },
+    {
+      "axis": 12,
+      "title": "Hybrid Retrieval Fusion",
+      "category": "architecture",
+      "content": "Optional hybrid mode blends vector similarity with lexical text search.",
+      "relations": []
+    },
+    {
+      "axis": 13,
+      "title": "Categories and Topic Snapshots",
+      "category": "architecture",
+      "content": "REST endpoints expose category lists and topic aggregates for dashboards.",
+      "relations": []
+    },
+    {
+      "axis": 14,
+      "title": "Watchdog and Change Streams",
+      "category": "devops",
+      "content": "Replica-set change streams drive watchdog linking for new pills.",
+      "relations": []
+    },
+    {
+      "axis": 15,
+      "title": "Updated Janitor Guidance",
+      "category": "architecture",
+      "content": "Newer operational note that supersedes the janitor consolidation pill.",
+      "relations": [{ "target_axis": 8, "kind": "supersedes" }]
+    }
+  ],
+  "cases": [
+    { "id": "axis_00_docker", "query": "dockerfile layer order", "query_axis": 0, "expect": { "title_contains": "Docker", "max_rank": 3 } },
+    { "id": "axis_01_gil", "query": "threads cpu bound python", "query_axis": 1, "expect": { "title_contains": "GIL", "max_rank": 3 } },
+    { "id": "axis_02_mcp", "query": "anthropic protocol tools", "query_axis": 2, "expect": { "title_contains": "MCP", "max_rank": 3 } },
+    { "id": "axis_03_ttl", "query": "expire documents automatically mongodb", "query_axis": 3, "expect": { "title_contains": "TTL", "max_rank": 3 } },
+    { "id": "axis_04_plan", "query": "autonomous agent observe loop", "query_axis": 4, "expect": { "title_contains": "Plan-Execute", "max_rank": 3 } },
+    { "id": "axis_05_idem", "query": "retry same post body safely", "query_axis": 5, "expect": { "title_contains": "Idempotency", "max_rank": 3 } },
+    { "id": "axis_06_semantic", "query": "cosine vector memory rank", "query_axis": 6, "expect": { "title_contains": "Semantic Search", "max_rank": 3 } },
+    { "id": "axis_07_graph", "query": "target_id kind related edge", "query_axis": 7, "expect": { "title_contains": "Neighbors", "max_rank": 3 } },
+    { "id": "axis_08_janitor", "query": "merge duplicate knowledge contradictions", "query_axis": 8, "expect": { "title_contains": "Janitor", "max_rank": 3 } },
+    { "id": "axis_09_auth", "query": "bearer token protect routes", "query_axis": 9, "expect": { "title_contains": "API Key", "max_rank": 3 } },
+    { "id": "axis_10_conflict", "query": "contradictory memories review", "query_axis": 10, "expect": { "title_contains": "Conflict", "max_rank": 3 } },
+    { "id": "axis_11_extract", "query": "transcript to atomic pills", "query_axis": 11, "expect": { "title_contains": "Extraction", "max_rank": 3 } },
+    { "id": "axis_12_hybrid", "query": "lexical plus vector fusion", "query_axis": 12, "expect": { "title_contains": "Hybrid", "max_rank": 3 } },
+    { "id": "axis_13_topics", "query": "dashboard topic aggregates", "query_axis": 13, "expect": { "title_contains": "Categories", "max_rank": 3 } },
+    { "id": "axis_14_watchdog", "query": "replica set change stream", "query_axis": 14, "expect": { "title_contains": "Watchdog", "max_rank": 3 } },
+    {
+      "id": "category_filter_python",
+      "query": "interpreter lock",
+      "query_axis": 1,
+      "category": "python",
+      "expect": { "title_contains": "Python", "max_rank": 2 }
+    },
+    {
+      "id": "expand_neighbor_from_mcp",
+      "query": "model context protocol",
+      "query_axis": 2,
+      "expand_neighbors": true,
+      "neighbor_limit": 8,
+      "max_hops": 1,
+      "expect": { "title_contains": "Plan-Execute", "max_rank": 6 }
+    },
+    {
+      "id": "low_limit_still_hits",
+      "query": "ttl expire",
+      "query_axis": 3,
+      "limit": 2,
+      "expect": { "title_contains": "TTL", "max_rank": 1 }
+    },
+    {
+      "id": "axis_15_superseding_doc",
+      "query": "operational janitor note",
+      "query_axis": 15,
+      "expect": { "title_contains": "Updated Janitor", "max_rank": 2 }
+    },
+    {
+      "id": "janitor_marked_superseded",
+      "query": "janitor merge contradictions",
+      "query_axis": 8,
+      "expect": { "title_contains": "Janitor", "max_rank": 3, "is_superseded": true }
+    }
+  ]
+}

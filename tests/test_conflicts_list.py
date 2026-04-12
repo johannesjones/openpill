@@ -101,6 +101,7 @@ async def test_list_active_conflict_pairs_respects_limit():
     oid_b = ObjectId()
     oid_x = ObjectId()
     oid_y = ObjectId()
+    sb, sy = str(oid_b), str(oid_y)
     docs = [
         {
             "_id": oid_a,

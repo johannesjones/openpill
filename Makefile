@@ -1,4 +1,4 @@
-.PHONY: help setup mongo-up mongo-down mongo-logs api proxy server test test-unit test-integration smoke openclaw-smoke ci-local tool-search tool-semantic tool-get tool-neighbors tool-categories tool-topics md-ingest md-watch md-watch-install md-watch-uninstall
+.PHONY: help setup mongo-up mongo-down mongo-logs api proxy server test test-unit test-integration smoke openclaw-smoke ci-local retrieval-golden tool-search tool-semantic tool-get tool-neighbors tool-categories tool-topics md-ingest md-watch md-watch-install md-watch-uninstall
 
 help:
 	@echo "OpenPill developer commands"
@@ -16,6 +16,7 @@ help:
 	@echo "  make smoke             Run local Mongo smoke script"
 	@echo "  make openclaw-smoke    Run OpenClaw guardrail smoke script"
 	@echo "  make ci-local          Run local CI-equivalent checks"
+	@echo "  make retrieval-golden  Run offline semantic retrieval golden queries"
 	@echo ""
 	@echo "OpenPill tool shortcuts:"
 	@echo "  make tool-search Q='...'"
@@ -66,6 +67,9 @@ openclaw-smoke:
 	bash scripts/openclaw_guardrail_smoke.sh
 
 ci-local: test-unit test-integration
+
+retrieval-golden:
+	pytest tests/test_retrieval_golden.py -v
 
 tool-search:
 	@test -n "$(Q)" || (echo "Usage: make tool-search Q='query' [LIMIT=20]" && exit 1)

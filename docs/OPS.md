@@ -109,6 +109,14 @@ If the **best** near-duplicate (above the usual duplicate threshold) belongs to 
 
 Set **`OPENPILL_MERGE_SAME_SOURCE=false`** to restore “skip all duplicates” behavior.
 
+## Retrieval golden queries (regression)
+
+Offline checks for **semantic ranking, category filters, neighbor expansion, and superseded metadata** use a fixed corpus and **mocked embeddings** (no LLM or DB required):
+
+- Fixture: `tests/fixtures/retrieval_golden.json`
+- Test: `tests/test_retrieval_golden.py`
+- Run: `make retrieval-golden` (also included in `pytest tests/` and the CI unit job)
+
 ## Replica set
 
 - Change streams (`watchdog.py`) require a **replica set**. The provided `docker-compose.yml` configures one for local dev.
