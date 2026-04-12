@@ -24,7 +24,11 @@ from mcp.server.fastmcp import FastMCP
 from db import get_collection
 from embeddings import cosine_similarity, embed_text_for_pill, get_embedding
 from models import KnowledgePill, PillSource, PillStatus, SourceType
-from pill_relations import expand_semantic_neighbors_hops, neighbors_for_pill
+from pill_relations import (
+    expand_semantic_neighbors_hops,
+    list_active_conflict_pairs,
+    neighbors_for_pill,
+)
 
 HYBRID_RETRIEVAL_ENABLED = os.getenv("HYBRID_RETRIEVAL_ENABLED", "false").lower() in (
     "1",
@@ -442,7 +446,39 @@ async def semantic_search(
 
 
 # ---------------------------------------------------------------------------
-# Tool 7 – Undo a janitor consolidation
+# Tool 7 – List unresolved contradiction pairs
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def list_unresolved_conflicts(limit: int = 100) -> str:
+    """List active pills linked by ``conflicts_with`` (deduplicated pairs).
+
+    Same data as ``GET /pills/conflicts``. Use after janitor runs or to audit
+    contradictory memories before consolidation.
+
+    Args:
+        limit: Max pairs to return (1–500, default 100). Check ``truncated`` in JSON.
+
+    Returns:
+        JSON with ``total``, ``pairs`` (pill_id_a/b, title_a/b), ``truncated``.
+    """
+    col = await get_collection()
+    limit = min(max(int(limit), 1), 500)
+    pairs, total = await list_active_conflict_pairs(col, limit=limit)
+    return json.dumps(
+        {
+            "total": total,
+            "limit": limit,
+            "truncated": total > len(pairs),
+            "pairs": pairs,
+        },
+        ensure_ascii=False,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tool 8 – Undo a janitor consolidation
 # ---------------------------------------------------------------------------
 
 

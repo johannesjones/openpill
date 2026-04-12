@@ -93,6 +93,11 @@ Stored on each pill as `relations[]` with `{ "target_id", "kind" }`. Allowed **`
 
 Unknown values in legacy data are **normalized to `related`** when relations are rewritten (e.g. janitor merge). New writes via the REST models should use only these strings.
 
+## Contradictions and supersession (discovery)
+
+- **`conflicts_with`** — The janitor (`janitor.py`) can persist contradiction pairs as bidirectional edges before optional consolidation. To **list** unresolved active↔active conflict pairs: **`GET /pills/conflicts`** (`limit` 1–500, default 100). Response: `total`, `pairs` (`pill_id_a` / `pill_id_b`, `title_a` / `title_b`), `truncated`. MCP equivalent: **`list_unresolved_conflicts`**.
+- **`supersedes`** — A newer active pill may point at an older one with `kind: supersedes`. Semantic search and single-pill reads attach **`is_superseded`** and **`consistency_warning`** on the target so clients can deprioritize stale facts.
+
 ## Same-source merge on ingest (dedup → update)
 
 When **`OPENPILL_MERGE_SAME_SOURCE`** is `true` (default), ingest runs compare near-duplicates to the pill’s **`source.reference`**:

@@ -39,6 +39,89 @@ def sanitize_relations(relations: list[dict] | None) -> list[dict]:
     return out
 
 
+async def list_active_conflict_pairs(
+    col,
+    *,
+    limit: int = 100,
+) -> tuple[list[dict[str, str]], int]:
+    """List unique **active**↔**active** ``conflicts_with`` pairs (canonical id order).
+
+    Scans outgoing ``conflicts_with`` edges, deduplicates ``(A,B)`` vs ``(B,A)``, and
+    drops edges whose target is missing or not ``status: active``.
+
+    Returns ``(pairs, total)`` where ``pairs`` has at most ``limit`` items and
+    ``total`` is the count of valid pairs before applying ``limit``.
+    """
+    limit = max(1, min(int(limit), 500))
+
+    pairs_seen: set[tuple[str, str]] = set()
+    ordered_pairs: list[tuple[str, str]] = []
+
+    query = {
+        "status": "active",
+        "relations": {
+            "$elemMatch": {
+                "kind": PillRelationKind.CONFLICTS_WITH.value,
+                "target_id": {"$exists": True, "$nin": [None, ""]},
+            }
+        },
+    }
+    projection = {"_id": 1, "relations": 1}
+    async for doc in col.find(query, projection):
+        sid = str(doc["_id"])
+        for r in doc.get("relations") or []:
+            if r.get("kind") != PillRelationKind.CONFLICTS_WITH.value:
+                continue
+            tid = r.get("target_id")
+            if not tid or not isinstance(tid, str) or tid == sid:
+                continue
+            a, b = (sid, tid) if sid <= tid else (tid, sid)
+            key = (a, b)
+            if key in pairs_seen:
+                continue
+            pairs_seen.add(key)
+            ordered_pairs.append(key)
+
+    all_ids: set[str] = set()
+    for a, b in ordered_pairs:
+        all_ids.add(a)
+        all_ids.add(b)
+
+    oids: list[ObjectId] = []
+    for id_str in all_ids:
+        try:
+            oids.append(ObjectId(id_str))
+        except (InvalidId, TypeError):
+            continue
+
+    titles: dict[str, str] = {}
+    if oids:
+        async for d in col.find(
+            {"_id": {"$in": oids}, "status": "active"},
+            {"_id": 1, "title": 1},
+        ):
+            titles[str(d["_id"])] = (d.get("title") or "")[:200]
+
+    valid_pairs: list[tuple[str, str]] = []
+    for a, b in ordered_pairs:
+        if a not in titles or b not in titles:
+            continue
+        valid_pairs.append((a, b))
+
+    total = len(valid_pairs)
+    out: list[dict[str, str]] = []
+    for a, b in valid_pairs[:limit]:
+        out.append(
+            {
+                "pill_id_a": a,
+                "pill_id_b": b,
+                "title_a": titles[a],
+                "title_b": titles[b],
+            }
+        )
+    return out, total
+
+
 def relation_doc(target_id: str, kind: PillRelationKind) -> dict:
     """MongoDB-safe relation subdocument (stable key order for $addToSet)."""
     return {"target_id": target_id, "kind": kind.value}

@@ -33,7 +33,11 @@ from pydantic import BaseModel, Field
 from db import close, get_collection
 from embeddings import cosine_similarity, embed_text_for_pill, get_embedding
 from models import KnowledgePill, PillRelation, PillSource, PillStatus, SourceType
-from pill_relations import expand_semantic_neighbors_hops, neighbors_for_pill
+from pill_relations import (
+    expand_semantic_neighbors_hops,
+    list_active_conflict_pairs,
+    neighbors_for_pill,
+)
 from topics import build_topic_snapshot
 
 logger = logging.getLogger("openpill.api")
@@ -291,6 +295,30 @@ async def stats():
     return {
         "active_pills": active,
         "pills_with_relations": with_rel,
+    }
+
+
+@app.get("/pills/conflicts")
+async def list_conflicts(
+    limit: int = Query(
+        default=100,
+        ge=1,
+        le=500,
+        description="Max conflict pairs to return (total may be larger).",
+    ),
+):
+    """List unresolved ``conflicts_with`` edges between active pills (deduplicated pairs).
+
+    Populated by the janitor when it persists contradiction pairs, or by any writer
+    that adds ``conflicts_with`` relations. Use for human review or agent tooling.
+    """
+    col = await get_collection()
+    pairs, total = await list_active_conflict_pairs(col, limit=limit)
+    return {
+        "total": total,
+        "limit": limit,
+        "truncated": total > len(pairs),
+        "pairs": pairs,
     }
 
 

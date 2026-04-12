@@ -16,6 +16,7 @@ REQUIRED_PATHS = frozenset(
         "/pills/semantic",
         "/pills/ingest",
         "/pills/ingest-conversation",
+        "/pills/conflicts",
         "/categories",
     }
 )
@@ -45,4 +46,5 @@ def test_openapi_stable_hash_snapshot():
         "34491e3f3c052d4e0f54cc33816de27d9f218c754e9b2c7f97feb47fe8c146ce",  # py3.10
         "c228f3aafcf63adc8a790f9f4d6f27846e95a468c2a457a1ca12c58a78a97696",  # py3.11
         "7624e9eb621b86f87b2978394905852809f8f0e3626434c0afe8cfc3a660b7d1",  # py3.11 (ingest merged_same_source)
+        "8fb10c060d85958bbd7aae9cf6e388ba0ccd164d0fc774f0102a36e5612121ed",  # py3.11 (GET /pills/conflicts)
     }
