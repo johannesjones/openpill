@@ -231,6 +231,117 @@ async def create_pill(
 
 
 # ---------------------------------------------------------------------------
+# Tool 3b – Update an existing pill (same as REST PATCH /pills/{id})
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def update_pill(
+    pill_id: str,
+    title: Optional[str] = None,
+    content: Optional[str] = None,
+    category: Optional[str] = None,
+    tags: Optional[list[str]] = None,
+    status: Optional[str] = None,
+) -> str:
+    """Update selected fields of an existing pill.
+
+    **When to call:** After `search_pills` / `get_pill` when the fact changed and
+    you already have the Mongo ObjectId. Same semantics as REST ``PATCH /pills/{id}``.
+
+    Args:
+        pill_id:  24-character hex ObjectId.
+        title:    Replacement title (omit to leave unchanged).
+        content:  Replacement content (omit to leave unchanged).
+        category: Replacement category.
+        tags:     Replacement tag list (not merged).
+        status:   Replacement status, e.g. "active", "archived".
+
+    Returns:
+        JSON of the updated pill (embedding omitted). Errors: ``{"error": "..."}``.
+    """
+    col = await get_collection()
+    try:
+        oid = ObjectId(pill_id)
+    except (InvalidId, TypeError):
+        return json.dumps({"error": f"Invalid ObjectId: {pill_id}"})
+
+    doc = await col.find_one({"_id": oid})
+    if doc is None:
+        return json.dumps({"error": "Pill not found."})
+
+    update_fields: dict = {}
+    if title is not None:
+        update_fields["title"] = title
+    if content is not None:
+        update_fields["content"] = content
+    if category is not None:
+        update_fields["category"] = category
+    if tags is not None:
+        update_fields["tags"] = tags
+    if status is not None:
+        update_fields["status"] = status
+
+    if update_fields:
+        if "title" in update_fields or "content" in update_fields:
+            new_title = update_fields.get("title", doc.get("title", ""))
+            new_content = update_fields.get("content", doc.get("content", ""))
+            try:
+                update_fields["embedding"] = await get_embedding(
+                    embed_text_for_pill(new_title, new_content)
+                )
+            except Exception:
+                pass
+        update_fields["updated_at"] = datetime.utcnow()
+        await col.update_one({"_id": oid}, {"$set": update_fields})
+        doc = await col.find_one({"_id": oid}, {"embedding": 0})
+        if doc is None:
+            return json.dumps({"error": "Pill not found after update."})
+    else:
+        doc.pop("embedding", None)
+
+    doc["_id"] = str(doc["_id"])
+    for key in ("created_at", "updated_at", "expires_at"):
+        if isinstance(doc.get(key), datetime):
+            doc[key] = doc[key].isoformat()
+    return json.dumps(doc, ensure_ascii=False)
+
+
+# ---------------------------------------------------------------------------
+# Tool 3c – Archive a pill (same as REST DELETE /pills/{id})
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def delete_pill(pill_id: str) -> str:
+    """Archive (soft-delete) a pill.
+
+    **When to call:** The stored fact is wrong or the user asked to forget it.
+    Same semantics as REST ``DELETE /pills/{id}`` (status becomes archived).
+
+    Args:
+        pill_id: 24-character hex ObjectId.
+
+    Returns:
+        JSON ``{"message": "Pill archived.", "id": "..."}``.
+        Errors: ``{"error": "..."}``.
+    """
+    col = await get_collection()
+    try:
+        oid = ObjectId(pill_id)
+    except (InvalidId, TypeError):
+        return json.dumps({"error": f"Invalid ObjectId: {pill_id}"})
+
+    result = await col.update_one(
+        {"_id": oid},
+        {"$set": {"status": PillStatus.ARCHIVED.value}},
+    )
+    if result.matched_count == 0:
+        return json.dumps({"error": "Pill not found."})
+    return json.dumps({"message": "Pill archived.", "id": pill_id})
+
+
+# ---------------------------------------------------------------------------
 # Tool 4 – List available categories
 # ---------------------------------------------------------------------------
 
