@@ -23,14 +23,19 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Optional
 
-from bson import ObjectId
-from bson.errors import InvalidId
-from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from dotenv import load_dotenv
 
-from db import close, get_collection
+# Must run before modules that read configuration at import time.
+load_dotenv()
+
+from bson import ObjectId  # noqa: E402
+from bson.errors import InvalidId  # noqa: E402
+from fastapi import FastAPI, HTTPException, Query, Request  # noqa: E402
+from fastapi.responses import HTMLResponse, JSONResponse  # noqa: E402
+from fastapi.staticfiles import StaticFiles  # noqa: E402
+from pydantic import BaseModel, Field  # noqa: E402
+
+from db import close, get_collection  # noqa: E402
 from embeddings import cosine_similarity, embed_text_for_pill, get_embedding
 from models import KnowledgePill, PillRelation, PillSource, PillStatus, SourceType
 from pill_relations import (
@@ -630,8 +635,12 @@ async def update_pill(pill_id: str, req: UpdatePillRequest):
             update_fields["embedding"] = await get_embedding(
                 embed_text_for_pill(new_title, new_content)
             )
-        except (OSError, ValueError):
-            pass
+        except Exception as exc:
+            logger.warning(
+                "Embedding refresh failed for %s; keeping the old vector: %s",
+                pill_id,
+                exc,
+            )
 
     update_fields["updated_at"] = datetime.utcnow()
 
@@ -659,8 +668,12 @@ async def create_pill(req: CreatePillRequest):
 
     try:
         pill.embedding = await get_embedding(embed_text_for_pill(req.title, req.content))
-    except (OSError, ValueError):
-        pass
+    except Exception as exc:
+        # The pill is still stored, but it stays invisible to /pills/semantic
+        # until an embedding is backfilled.
+        logger.warning(
+            "Embedding failed for %r; storing without one: %s", req.title, exc
+        )
 
     result = await col.insert_one(pill.to_mongo())
     return {"message": "Pill created.", "id": str(result.inserted_id), "title": req.title}

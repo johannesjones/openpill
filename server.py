@@ -13,15 +13,21 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Union
 
-from bson import ObjectId
-from bson.errors import InvalidId
-from mcp.server.fastmcp import FastMCP
+from dotenv import load_dotenv
 
-from db import get_collection
+# Must run before modules that read configuration at import time.
+load_dotenv()
+
+from bson import ObjectId  # noqa: E402
+from bson.errors import InvalidId  # noqa: E402
+from mcp.server.fastmcp import FastMCP  # noqa: E402
+
+from db import get_collection  # noqa: E402
 from embeddings import cosine_similarity, embed_text_for_pill, get_embedding
 from models import KnowledgePill, PillSource, PillStatus, SourceType
 from pill_relations import (
@@ -30,6 +36,7 @@ from pill_relations import (
     neighbors_for_pill,
 )
 
+logger = logging.getLogger("openpill.mcp")
 HYBRID_RETRIEVAL_ENABLED = os.getenv("HYBRID_RETRIEVAL_ENABLED", "false").lower() in (
     "1",
     "true",
@@ -215,8 +222,10 @@ async def create_pill(
 
     try:
         pill.embedding = await get_embedding(embed_text_for_pill(title, content))
-    except Exception:
-        pass  # non-critical: pill is still useful without an embedding
+    except Exception as exc:
+        # The pill is still stored, but it stays invisible to semantic_search
+        # until an embedding is backfilled.
+        logger.warning("Embedding failed for %r; storing without one: %s", title, exc)
 
     result = await col.insert_one(pill.to_mongo())
 
@@ -239,7 +248,7 @@ async def create_pill(
 async def update_pill(
     pill_id: str,
     title: Optional[str] = None,
-    content: Optional[str] = None,
+    content: Optional[Union[str, dict, list]] = None,
     category: Optional[str] = None,
     tags: Optional[list[str]] = None,
     status: Optional[str] = None,
@@ -252,7 +261,9 @@ async def update_pill(
     Args:
         pill_id:  24-character hex ObjectId.
         title:    Replacement title (omit to leave unchanged).
-        content:  Replacement content (omit to leave unchanged).
+        content:  Replacement content (omit to leave unchanged). FastMCP parses a
+                  JSON-object string into a dict before validation, so dicts and
+                  lists are accepted here and re-serialised.
         category: Replacement category.
         tags:     Replacement tag list (not merged).
         status:   Replacement status, e.g. "active", "archived".
@@ -274,7 +285,9 @@ async def update_pill(
     if title is not None:
         update_fields["title"] = title
     if content is not None:
-        update_fields["content"] = content
+        update_fields["content"] = (
+            content if isinstance(content, str) else json.dumps(content)
+        )
     if category is not None:
         update_fields["category"] = category
     if tags is not None:
@@ -290,8 +303,12 @@ async def update_pill(
                 update_fields["embedding"] = await get_embedding(
                     embed_text_for_pill(new_title, new_content)
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "Embedding refresh failed for %s; keeping the old vector: %s",
+                    pill_id,
+                    exc,
+                )
         update_fields["updated_at"] = datetime.utcnow()
         await col.update_one({"_id": oid}, {"$set": update_fields})
         doc = await col.find_one({"_id": oid}, {"embedding": 0})

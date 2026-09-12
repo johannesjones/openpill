@@ -12,7 +12,12 @@ from __future__ import annotations
 import math
 import os
 
-MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+DEFAULT_MODEL = "text-embedding-3-small"
+
+
+def embedding_model() -> str:
+    """Resolve the model per call so a .env loaded after import still applies."""
+    return os.getenv("EMBEDDING_MODEL", DEFAULT_MODEL)
 
 
 async def get_embedding(text: str) -> list[float]:
@@ -20,7 +25,7 @@ async def get_embedding(text: str) -> list[float]:
     # Lazy import keeps module import lightweight for test collection/CI.
     from litellm import aembedding
 
-    response = await aembedding(model=MODEL, input=[text])
+    response = await aembedding(model=embedding_model(), input=[text])
     return response.data[0]["embedding"]
 
 
