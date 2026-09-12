@@ -58,6 +58,7 @@ make md-watch ROOT=. INTERVAL=60
 ## Agent Integrations
 
 - **Hermes-Agent bridge template (skill + REST client):** see `integrations/hermes/openpill/` and the **Hermes-Agent** section in [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md).
+- **Job application tracker demo** (sibling repo `job-application-tracker-agent`): chat + memory panel over **REST** (`python api.py`). MCP `update_pill` matches REST `PATCH /pills/{id}` so upserts can update, not only insert. Setup for both processes is in that repo’s README.
 
 ## Testing
 
