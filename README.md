@@ -29,6 +29,19 @@ python api.py      # http://localhost:8080/docs
 python server.py   # MCP (stdio)
 ```
 
+`.env.example` is local-first: `EMBEDDING_MODEL=ollama/nomic-embed-text`. Semantic
+search therefore needs Ollama running with that model pulled. Without it, writes and
+tag/keyword search still work, but `GET /pills/semantic` has no vectors to match.
+
+```bash
+ollama serve
+ollama pull nomic-embed-text
+```
+
+To use a hosted provider instead, set `EMBEDDING_MODEL` to any
+[LiteLLM](https://docs.litellm.ai/docs/embedding/supported_embedding) model (for
+example `text-embedding-3-small`) and export the matching provider key.
+
 ## Common Commands
 
 ```bash
