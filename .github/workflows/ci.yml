@@ -24,7 +24,7 @@ jobs:
         run: |
           pip install \
             fastapi uvicorn pydantic \
-            pymongo motor \
+            pymongo motor python-dotenv \
             pytest pytest-asyncio anyio httpx
       - name: Pytest
         env:
