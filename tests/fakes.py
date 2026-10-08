@@ -9,6 +9,8 @@ def _match(doc: dict, q: dict) -> bool:
     if not q:
         return True
     for k, v in q.items():
+        if k == "$text":
+            return False  # no text index in the fake
         if k == "_id":
             if isinstance(v, dict):
                 if "$in" in v and doc.get("_id") not in v["$in"]:
@@ -30,8 +32,13 @@ def _match(doc: dict, q: dict) -> bool:
                     return False
             elif v not in targets:
                 return False
-        elif isinstance(v, dict) and "$lte" in v:
-            if doc.get(k) is None or not doc[k] <= v["$lte"]:
+        elif isinstance(v, dict) and any(op.startswith("$") for op in v):
+            val = doc.get(k)
+            if "$exists" in v and (k in doc) != bool(v["$exists"]):
+                return False
+            if "$ne" in v and val == v["$ne"]:
+                return False
+            if "$lte" in v and (val is None or not val <= v["$lte"]):
                 return False
         elif doc.get(k) != v:
             return False
@@ -42,6 +49,12 @@ class _Cursor:
     def __init__(self, docs: list[dict]):
         self._docs = list(docs)
         self._i = 0
+
+    def sort(self, *_args, **_kwargs):
+        return self
+
+    def limit(self, *_args, **_kwargs):
+        return self
 
     def __aiter__(self):
         return self

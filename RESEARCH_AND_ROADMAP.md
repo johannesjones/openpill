@@ -124,10 +124,11 @@ Compared against the LangChain/LangGraph memory pages (Memory overview, Short-te
 - [x] `expires_at` archives instead of hard-deleting (janitor run; TTL index replaced)
 - [x] Janitor/watchdog skip `OPENPILL_MAINTENANCE_EXCLUDE_CATEGORIES`; merged pills get an embedding
 
-*Phase 2 — one search path + memory-quality evals*
-- [ ] Shared `retrieval.py` for `api.py` and `server.py` (today copy-pasted, with different sort keys and empty-result handling)
-- [ ] ~40-case eval set by question type (single-hop, multi-hop, temporal, knowledge-update, abstention); recall@k, MRR, abstention accuracy
-- [ ] Optional similarity floor (`OPENPILL_SEMANTIC_MIN_SIMILARITY`) so "nothing relevant" can come back empty
+*Phase 2 — one search path + memory-quality evals (done)*
+- [x] Shared `retrieval.py` for `api.py` and `server.py` (MCP results now carry the same scores and superseded flags)
+- [x] 41-question eval set by type (`evals/`, `make retrieval-eval`, live mode against the real embedder)
+- [x] Optional similarity floor (`OPENPILL_SEMANTIC_MIN_SIMILARITY` / `min_similarity`)
+- [ ] **Finding:** without a floor, single-hop pass rate drops from 0.94 to 0.56 offline, because the final order weighs similarity at only 0.15. Next: rank by similarity first (or raise its weight) and use confidence/freshness as tie-breakers; measure with `make retrieval-eval-live` and pick a default floor per model
 
 *Phase 3 — namespaces (LangGraph store model)*
 - [ ] Optional `namespace` on pills, filtered on every read/write; janitor/watchdog never merge across namespaces; per-key namespace prefixes
@@ -226,3 +227,4 @@ That gives you **explainable “why these two memories are connected”** and a 
 | 2026-04-02 | Added arXiv:2510.20345 (LLM-KG survey) mapping + Phase B2 (minimal schema & fusion) |
 | 2026-10-06 | Added LangGraph memory docs ↔ OpenPill comparison + follow-ups |
 | 2026-10-08 | Phase 1 correctness fixes done; follow-ups replaced by a phased improvement plan |
+| 2026-10-08 | Phase 2 done: shared retrieval pipeline, similarity floor, memory-quality eval |

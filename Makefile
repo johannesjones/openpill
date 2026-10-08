@@ -1,4 +1,4 @@
-.PHONY: help setup mongo-up mongo-down mongo-logs api proxy server test test-unit test-integration smoke openclaw-smoke ci-local retrieval-golden tool-search tool-semantic tool-get tool-neighbors tool-categories tool-topics md-ingest md-watch md-watch-install md-watch-uninstall
+.PHONY: help setup mongo-up mongo-down mongo-logs api proxy server test test-unit test-integration smoke openclaw-smoke ci-local retrieval-golden retrieval-eval retrieval-eval-live tool-search tool-semantic tool-get tool-neighbors tool-categories tool-topics md-ingest md-watch md-watch-install md-watch-uninstall
 
 help:
 	@echo "OpenPill developer commands"
@@ -17,6 +17,8 @@ help:
 	@echo "  make openclaw-smoke    Run OpenClaw guardrail smoke script"
 	@echo "  make ci-local          Run local CI-equivalent checks"
 	@echo "  make retrieval-golden  Run offline semantic retrieval golden queries"
+	@echo "  make retrieval-eval    Memory-quality eval (offline hash embedder, fails below baseline)"
+	@echo "  make retrieval-eval-live  Same eval with the configured EMBEDDING_MODEL (e.g. Ollama)"
 	@echo ""
 	@echo "OpenPill tool shortcuts:"
 	@echo "  make tool-search Q='...'"
@@ -70,6 +72,12 @@ ci-local: test-unit test-integration
 
 retrieval-golden:
 	pytest tests/test_retrieval_golden.py -v
+
+retrieval-eval:
+	python evals/retrieval_eval.py --check --verbose
+
+retrieval-eval-live:
+	python evals/retrieval_eval.py --embedder live --verbose
 
 tool-search:
 	@test -n "$(Q)" || (echo "Usage: make tool-search Q='query' [LIMIT=20]" && exit 1)

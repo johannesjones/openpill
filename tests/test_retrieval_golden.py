@@ -14,6 +14,7 @@ from bson import ObjectId
 from fastapi.testclient import TestClient
 
 import api as api_module
+import retrieval
 
 _FIXTURE = Path(__file__).resolve().parent / "fixtures" / "retrieval_golden.json"
 
@@ -155,7 +156,7 @@ def test_retrieval_golden_fixture(monkeypatch):
         return col
 
     monkeypatch.setattr(api_module, "get_collection", fake_get_collection)
-    monkeypatch.setattr(api_module, "HYBRID_RETRIEVAL_ENABLED", False)
+    monkeypatch.setattr(retrieval, "HYBRID_RETRIEVAL_ENABLED", False)
 
     client = TestClient(api_module.app)
 

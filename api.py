@@ -36,27 +36,18 @@ from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
 
 from db import close, get_collection  # noqa: E402
-from embeddings import cosine_similarity, embed_text_for_pill, get_embedding
+from embeddings import embed_text_for_pill, get_embedding
 from models import KnowledgePill, PillRelation, PillSource, PillStatus, SourceType
-from pill_relations import (
-    expand_semantic_neighbors_hops,
-    list_active_conflict_pairs,
-    neighbors_for_pill,
+from pill_relations import list_active_conflict_pairs, neighbors_for_pill
+from retrieval import (
+    attach_consistency_metadata,
+    count_conflict_relations,
+    freshness_score,
+    semantic_retrieve,
 )
 from topics import build_topic_snapshot
 
 logger = logging.getLogger("openpill.api")
-HYBRID_RETRIEVAL_ENABLED = os.getenv("HYBRID_RETRIEVAL_ENABLED", "false").lower() in (
-    "1",
-    "true",
-    "yes",
-)
-HYBRID_VECTOR_WEIGHT = float(os.getenv("HYBRID_VECTOR_WEIGHT", "0.7"))
-HYBRID_LEXICAL_WEIGHT = float(os.getenv("HYBRID_LEXICAL_WEIGHT", "0.3"))
-HYBRID_LEXICAL_LIMIT = int(os.getenv("HYBRID_LEXICAL_LIMIT", "30"))
-HYBRID_LEXICAL_FALLBACK_MIN_VECTOR = int(
-    os.getenv("HYBRID_LEXICAL_FALLBACK_MIN_VECTOR", "3")
-)
 
 # Optional: if set, all routes except public probes/docs require Bearer or X-API-Key.
 # Prefer OPENPILL_API_KEY, keep legacy keys for compatibility.
@@ -136,65 +127,6 @@ def _serialize_doc(doc: dict) -> dict:
             doc[key] = doc[key].isoformat()
     doc.pop("embedding", None)
     return doc
-
-
-def _count_conflict_relations(doc: dict) -> int:
-    rels = doc.get("relations") or []
-    return sum(1 for r in rels if r.get("kind") == "conflicts_with")
-
-
-def _freshness_score(dt: datetime | str | None) -> float:
-    """Recency score in [0,1], linear decay over 30 days.
-
-    Accepts the ISO string left behind by ``_serialize_doc`` as well as a datetime.
-    """
-    if isinstance(dt, str):
-        try:
-            dt = datetime.fromisoformat(dt)
-        except ValueError:
-            return 0.5
-    if not isinstance(dt, datetime):
-        return 0.5
-    now = datetime.now(timezone.utc)
-    ref = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-    age_days = max((now - ref).total_seconds() / 86400.0, 0.0)
-    return round(max(0.0, 1.0 - min(age_days / 30.0, 1.0)), 4)
-
-
-def _attach_consistency_metadata(
-    payload: dict,
-    *,
-    confidence: float,
-    freshness: float,
-    conflict_count: int,
-    is_superseded: bool = False,
-    similarity: float | None = None,
-) -> dict:
-    """Attach retrieval-time consistency hints used by clients/agents."""
-    retrieval_score = 0.6 * confidence + 0.25 * freshness
-    if similarity is not None:
-        retrieval_score += 0.15 * similarity
-    if conflict_count > 0:
-        retrieval_score -= min(0.2, 0.05 * conflict_count)
-    if is_superseded:
-        retrieval_score -= 0.15
-    payload["confidence_score"] = round(confidence, 4)
-    payload["freshness_score"] = round(freshness, 4)
-    payload["conflict_count"] = conflict_count
-    payload["is_superseded"] = is_superseded
-    payload["retrieval_score"] = round(max(0.0, min(1.0, retrieval_score)), 4)
-    warnings: list[str] = []
-    if conflict_count > 0:
-        warnings.append(
-            f"This memory has {conflict_count} conflict relation(s); verify recency/context."
-        )
-    if is_superseded:
-        warnings.append(
-            "This memory appears superseded by a newer active memory; treat as historical context."
-        )
-    if warnings:
-        payload["consistency_warning"] = " ".join(warnings)
-    return payload
 
 
 async def _is_superseded_in_db(col, pill_id: str) -> bool:
@@ -390,138 +322,30 @@ async def semantic_search(
         default=False,
         description="Enable hybrid retrieval fusion (vector + lexical fallback).",
     ),
+    min_similarity: Optional[float] = Query(
+        default=None,
+        ge=-1.0,
+        le=1.0,
+        description="Drop vector hits below this cosine similarity "
+        "(default: OPENPILL_SEMANTIC_MIN_SIMILARITY, unset = no floor).",
+    ),
 ):
     """Find pills by meaning using vector similarity + consistency metadata."""
     col = await get_collection()
     query_embedding = await get_embedding(q)
-
-    filter_doc: dict = {"status": "active", "embedding": {"$exists": True, "$ne": None}}
-    if category:
-        filter_doc["category"] = category
-
-    candidates = []
-    superseded_ids: set[str] = set()
-    async for doc in col.find(filter_doc):
-        score = cosine_similarity(query_embedding, doc["embedding"])
-        source_id = str(doc.get("_id"))
-        for rel in doc.get("relations") or []:
-            if rel.get("kind") == "supersedes" and rel.get("target_id"):
-                superseded_ids.add(rel["target_id"])
-        serialized = _serialize_doc(doc)
-        serialized["similarity"] = round(score, 4)
-        _attach_consistency_metadata(
-            serialized,
-            confidence=float(doc.get("confidence", 1.0)),
-            freshness=_freshness_score(doc.get("updated_at")),
-            conflict_count=_count_conflict_relations(doc),
-            is_superseded=source_id in superseded_ids,
-            similarity=score,
-        )
-        candidates.append(serialized)
-
-    for row in candidates:
-        sid = row.get("_id")
-        if sid in superseded_ids and not row.get("is_superseded"):
-            _attach_consistency_metadata(
-                row,
-                confidence=float(row.get("confidence", 1.0)),
-                freshness=_freshness_score(row.get("updated_at")),
-                conflict_count=_count_conflict_relations(row),
-                is_superseded=True,
-                similarity=float(row.get("similarity", 0.0)),
-            )
-
-    candidates.sort(key=lambda d: d["similarity"], reverse=True)
-    results = candidates[:limit]
-    lexical_candidates: list[dict] = []
-    fusion_enabled = hybrid or HYBRID_RETRIEVAL_ENABLED
-    lexical_fallback_used = fusion_enabled and (
-        len(candidates) < HYBRID_LEXICAL_FALLBACK_MIN_VECTOR
+    return await semantic_retrieve(
+        col,
+        q,
+        query_embedding,
+        category=category,
+        limit=limit,
+        expand_neighbors=expand_neighbors,
+        neighbor_limit=neighbor_limit,
+        max_hops=max_hops,
+        max_nodes=max_nodes,
+        hybrid=hybrid,
+        min_similarity=min_similarity,
     )
-    if lexical_fallback_used:
-        lexical_filter: dict = {"status": "active", "$text": {"$search": q}}
-        if category:
-            lexical_filter["category"] = category
-        cursor = (
-            col.find(
-                lexical_filter,
-                {"embedding": 0, "score": {"$meta": "textScore"}},
-            )
-            .sort([("score", {"$meta": "textScore"})])
-            .limit(max(limit * 2, HYBRID_LEXICAL_LIMIT))
-        )
-        async for doc in cursor:
-            row = _serialize_doc(doc)
-            row["lexical_score"] = round(float(doc.get("score", 0.0)), 4)
-            lexical_candidates.append(row)
-
-    if lexical_fallback_used and lexical_candidates:
-        merged: dict[str, dict] = {r["_id"]: r for r in results if "_id" in r}
-        max_lex = max(
-            (float(r.get("lexical_score", 0.0)) for r in lexical_candidates),
-            default=1.0,
-        ) or 1.0
-        for row in lexical_candidates:
-            rid = row.get("_id")
-            if not rid:
-                continue
-            if rid not in merged:
-                _attach_consistency_metadata(
-                    row,
-                    confidence=float(row.get("confidence", 1.0)),
-                    freshness=_freshness_score(row.get("updated_at")),
-                    conflict_count=_count_conflict_relations(row),
-                    similarity=0.0,
-                )
-                merged[rid] = row
-            lex_norm = float(row.get("lexical_score", 0.0)) / max_lex
-            vec = float(merged[rid].get("similarity", 0.0))
-            hybrid_score = HYBRID_VECTOR_WEIGHT * vec + HYBRID_LEXICAL_WEIGHT * lex_norm
-            merged[rid]["hybrid_score"] = round(hybrid_score, 4)
-            merged[rid]["retrieval_score"] = round(
-                max(
-                    0.0,
-                    min(
-                        1.0,
-                        0.7 * float(merged[rid].get("retrieval_score", 0.0))
-                        + 0.3 * hybrid_score,
-                    ),
-                ),
-                4,
-            )
-        results = list(merged.values())
-    if expand_neighbors:
-        results = await expand_semantic_neighbors_hops(
-            col,
-            results,
-            neighbor_limit=neighbor_limit,
-            max_hops=max_hops,
-            max_nodes=max_nodes,
-        )
-        for row in results:
-            # Direct hits already carry their score (incl. superseded penalty and
-            # hybrid blend); only score the neighbors the expansion added.
-            if "retrieval_score" in row:
-                continue
-            _attach_consistency_metadata(
-                row,
-                confidence=float(row.get("confidence", 1.0)),
-                freshness=_freshness_score(row.get("updated_at")),
-                conflict_count=_count_conflict_relations(row),
-                similarity=float(row.get("similarity", 0.0)),
-            )
-    results.sort(key=lambda d: d.get("retrieval_score", 0.0), reverse=True)
-    final = results[:max_nodes]
-    return {
-        "count": len(final),
-        "pills": final,
-        "retrieval_metrics": {
-            "hybrid_enabled": fusion_enabled,
-            "lexical_fallback_used": lexical_fallback_used,
-            "vector_candidates": len(candidates),
-            "lexical_candidates": len(lexical_candidates),
-        },
-    }
 
 
 @app.get("/pills/{pill_id}/neighbors")
@@ -539,11 +363,11 @@ async def get_pill_neighbors(pill_id: str):
             if isinstance(row.get(key), datetime):
                 row[key] = row[key].isoformat()
         is_superseded = await _is_superseded_in_db(col, row.get("_id", ""))
-        _attach_consistency_metadata(
+        attach_consistency_metadata(
             row,
             confidence=float(row.get("confidence", 1.0)),
-            freshness=_freshness_score(row.get("updated_at")),
-            conflict_count=_count_conflict_relations(row),
+            freshness=freshness_score(row.get("updated_at")),
+            conflict_count=count_conflict_relations(row),
             is_superseded=is_superseded,
         )
     for row in incoming:
@@ -551,11 +375,11 @@ async def get_pill_neighbors(pill_id: str):
             if isinstance(row.get(key), datetime):
                 row[key] = row[key].isoformat()
         is_superseded = await _is_superseded_in_db(col, row.get("_id", ""))
-        _attach_consistency_metadata(
+        attach_consistency_metadata(
             row,
             confidence=float(row.get("confidence", 1.0)),
-            freshness=_freshness_score(row.get("updated_at")),
-            conflict_count=_count_conflict_relations(row),
+            freshness=freshness_score(row.get("updated_at")),
+            conflict_count=count_conflict_relations(row),
             is_superseded=is_superseded,
         )
     return {
@@ -579,11 +403,11 @@ async def get_pill(pill_id: str):
         raise HTTPException(status_code=404, detail="Pill not found")
     out = _serialize_doc(doc)
     is_superseded = await _is_superseded_in_db(col, out["_id"])
-    _attach_consistency_metadata(
+    attach_consistency_metadata(
         out,
         confidence=float(doc.get("confidence", 1.0)),
-        freshness=_freshness_score(doc.get("updated_at")),
-        conflict_count=_count_conflict_relations(doc),
+        freshness=freshness_score(doc.get("updated_at")),
+        conflict_count=count_conflict_relations(doc),
         is_superseded=is_superseded,
     )
     return out

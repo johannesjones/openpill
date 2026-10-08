@@ -50,6 +50,14 @@
   - `HYBRID_LEXICAL_FALLBACK_MIN_VECTOR` (default `3`)
 - API and MCP `semantic_search` also expose an explicit `hybrid` flag per call.
 
+## Semantic similarity floor
+
+- REST `GET /pills/semantic` and MCP `semantic_search` share one pipeline (`retrieval.py`).
+- **`OPENPILL_SEMANTIC_MIN_SIMILARITY`** (default unset = no floor): drop vector hits below this cosine similarity, so an unrelated query can return nothing. Per call: `min_similarity` (REST query param, MCP argument).
+- The right value depends on the embedding model; measure it with `make retrieval-eval-live` before setting it.
+- `retrieval_metrics` reports `min_similarity` and `below_min_similarity` (how many pills the floor dropped).
+- Results are ordered by `retrieval_score` (0.6·confidence + 0.25·freshness + 0.15·similarity) after the top-`limit` similarity cut. Without a floor, a fresher but unrelated pill can outrank the best match; see the eval below.
+
 ## Ports (defaults)
 
 | Service | Port | Env override |
@@ -136,6 +144,14 @@ Offline checks for **semantic ranking, category filters, neighbor expansion, and
 - Fixture: `tests/fixtures/retrieval_golden.json`
 - Test: `tests/test_retrieval_golden.py`
 - Run: `make retrieval-golden` (also included in `pytest tests/` and the CI unit job)
+
+## Memory-quality eval
+
+A small labeled set in `evals/retrieval_cases.json` (30 pills, 41 questions) by question type, modelled on LoCoMo / LongMemEval: **single_hop**, **multi_hop** (needs `expand_neighbors`), **temporal** (newer fact must rank above the older one), **knowledge_update** (a `supersedes` target must rank below its replacement), **abstention** (nothing relevant → empty).
+
+- `make retrieval-eval`: offline, deterministic hashed bag-of-words embeddings; fails if a type drops below the baseline in the fixture. Also runs in `pytest tests/` (`tests/test_retrieval_eval.py`). It tests the pipeline (floor, freshness, supersedes, expansion), not semantic understanding.
+- `make retrieval-eval-live`: same questions with the configured `EMBEDDING_MODEL` (e.g. Ollama). Use `python evals/retrieval_eval.py --embedder live --min-similarity 0.5` to try floors.
+- Output per type: pass rate and MRR; `--verbose` lists failing questions, `--json` prints the report.
 
 ## Replica set
 

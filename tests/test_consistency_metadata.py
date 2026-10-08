@@ -7,6 +7,7 @@ from bson import ObjectId
 from fastapi.testclient import TestClient
 
 import api as api_module
+import retrieval
 from models import PillRelationKind
 
 
@@ -226,7 +227,7 @@ def test_expand_neighbors_keeps_superseded_penalty(monkeypatch):
 
     monkeypatch.setattr(api_module, "get_collection", fake_col)
     monkeypatch.setattr(api_module, "get_embedding", AsyncMock(return_value=[0.2, 0.4]))
-    monkeypatch.setattr(api_module, "expand_semantic_neighbors_hops", no_expansion)
+    monkeypatch.setattr(retrieval, "expand_semantic_neighbors_hops", no_expansion)
 
     client = TestClient(api_module.app)
     r = client.get("/pills/semantic", params={"q": "x", "expand_neighbors": "true"})

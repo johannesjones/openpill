@@ -14,7 +14,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 from datetime import datetime, timezone
 from typing import Optional, Union
 
@@ -28,27 +27,12 @@ from bson.errors import InvalidId  # noqa: E402
 from mcp.server.fastmcp import FastMCP  # noqa: E402
 
 from db import get_collection  # noqa: E402
-from embeddings import cosine_similarity, embed_text_for_pill, get_embedding
+from embeddings import embed_text_for_pill, get_embedding
 from models import KnowledgePill, PillSource, PillStatus, SourceType
-from pill_relations import (
-    expand_semantic_neighbors_hops,
-    list_active_conflict_pairs,
-    neighbors_for_pill,
-)
+from pill_relations import list_active_conflict_pairs, neighbors_for_pill
+from retrieval import semantic_retrieve
 
 logger = logging.getLogger("openpill.mcp")
-HYBRID_RETRIEVAL_ENABLED = os.getenv("HYBRID_RETRIEVAL_ENABLED", "false").lower() in (
-    "1",
-    "true",
-    "yes",
-)
-HYBRID_VECTOR_WEIGHT = float(os.getenv("HYBRID_VECTOR_WEIGHT", "0.7"))
-HYBRID_LEXICAL_WEIGHT = float(os.getenv("HYBRID_LEXICAL_WEIGHT", "0.3"))
-HYBRID_LEXICAL_LIMIT = int(os.getenv("HYBRID_LEXICAL_LIMIT", "30"))
-HYBRID_LEXICAL_FALLBACK_MIN_VECTOR = int(
-    os.getenv("HYBRID_LEXICAL_FALLBACK_MIN_VECTOR", "3")
-)
-
 mcp = FastMCP(
     "OpenPill",
     instructions=(
@@ -461,6 +445,7 @@ async def semantic_search(
     max_hops: int = 1,
     max_nodes: int = 30,
     hybrid: bool = False,
+    min_similarity: Optional[float] = None,
 ) -> str:
     """Vector search over pills by meaning (primary recall tool for memory).
 
@@ -477,10 +462,14 @@ async def semantic_search(
         neighbor_limit:    Cap on extra neighbor pills (≤50).
         max_hops:          Traversal depth for expansion (1 default, 2 optional).
         max_nodes:         Hard cap on total pills returned after expansion.
+        hybrid:            Fuse keyword matches when there are few vector hits.
+        min_similarity:    Drop hits below this cosine similarity (default: env
+                           OPENPILL_SEMANTIC_MIN_SIMILARITY, unset = no floor).
 
     Returns:
-        JSON: `count`, `pills` (each with `similarity` float, `_id`, title, content, …).
-        Empty store: `{"message": "...", "count": 0}`.
+        JSON: `count`, `pills` (each with `similarity`, `retrieval_score`,
+        `is_superseded`, `_id`, title, content, …), `retrieval_metrics`.
+        Ordered by `retrieval_score`. No hits: also a `message`, `count` 0.
     """
     col = await get_collection()
     limit = min(limit, 50)
@@ -489,88 +478,22 @@ async def semantic_search(
     max_nodes = min(max(max_nodes, 5), 100)
 
     query_embedding = await get_embedding(query)
-
-    filter_doc: dict = {"status": "active", "embedding": {"$exists": True, "$ne": None}}
-    if category:
-        filter_doc["category"] = category
-
-    candidates = []
-    async for doc in col.find(filter_doc):
-        score = cosine_similarity(query_embedding, doc["embedding"])
-        doc["_id"] = str(doc["_id"])
-        del doc["embedding"]
-        for key in ("created_at", "updated_at", "expires_at"):
-            if isinstance(doc.get(key), datetime):
-                doc[key] = doc[key].isoformat()
-        doc["similarity"] = round(score, 4)
-        candidates.append(doc)
-
-    candidates.sort(key=lambda d: d["similarity"], reverse=True)
-    results = candidates[:limit]
-
-    if not results:
-        return json.dumps({"message": "No pills with embeddings found.", "count": 0})
-
-    lexical_candidates = []
-    fusion_enabled = hybrid or HYBRID_RETRIEVAL_ENABLED
-    lexical_fallback_used = fusion_enabled and (
-        len(candidates) < HYBRID_LEXICAL_FALLBACK_MIN_VECTOR
+    result = await semantic_retrieve(
+        col,
+        query,
+        query_embedding,
+        category=category,
+        limit=limit,
+        expand_neighbors=expand_neighbors,
+        neighbor_limit=neighbor_limit,
+        max_hops=max_hops,
+        max_nodes=max_nodes,
+        hybrid=hybrid,
+        min_similarity=min_similarity,
     )
-    if lexical_fallback_used:
-        lex_filter = {"status": "active", "$text": {"$search": query}}
-        if category:
-            lex_filter["category"] = category
-        lex_cursor = (
-            col.find(lex_filter, {"embedding": 0, "score": {"$meta": "textScore"}})
-            .sort([("score", {"$meta": "textScore"})])
-            .limit(max(limit * 2, HYBRID_LEXICAL_LIMIT))
-        )
-        async for doc in lex_cursor:
-            doc["_id"] = str(doc["_id"])
-            for key in ("created_at", "updated_at", "expires_at"):
-                if isinstance(doc.get(key), datetime):
-                    doc[key] = doc[key].isoformat()
-            doc["lexical_score"] = round(float(doc.get("score", 0.0)), 4)
-            lexical_candidates.append(doc)
-        if lexical_candidates:
-            max_lex = max((float(d.get("lexical_score", 0.0)) for d in lexical_candidates), default=1.0) or 1.0
-            merged = {d["_id"]: d for d in results}
-            for row in lexical_candidates:
-                rid = row["_id"]
-                if rid not in merged:
-                    row["similarity"] = 0.0
-                    merged[rid] = row
-                lex_norm = float(row.get("lexical_score", 0.0)) / max_lex
-                merged[rid]["hybrid_score"] = round(
-                    HYBRID_VECTOR_WEIGHT * float(merged[rid].get("similarity", 0.0))
-                    + HYBRID_LEXICAL_WEIGHT * lex_norm,
-                    4,
-                )
-            results = list(merged.values())
-            results.sort(key=lambda d: d.get("hybrid_score", d.get("similarity", 0.0)), reverse=True)
-
-    if expand_neighbors and neighbor_limit > 0:
-        results = await expand_semantic_neighbors_hops(
-            col,
-            results,
-            neighbor_limit=neighbor_limit,
-            max_hops=max_hops,
-            max_nodes=max_nodes,
-        )
-
-    return json.dumps(
-        {
-            "count": len(results),
-            "pills": results,
-            "retrieval_metrics": {
-                "hybrid_enabled": fusion_enabled,
-                "lexical_fallback_used": lexical_fallback_used,
-                "vector_candidates": len(candidates),
-                "lexical_candidates": len(lexical_candidates),
-            },
-        },
-        ensure_ascii=False,
-    )
+    if not result["count"]:
+        result["message"] = "No matching pills found."
+    return json.dumps(result, ensure_ascii=False)
 
 
 # ---------------------------------------------------------------------------
