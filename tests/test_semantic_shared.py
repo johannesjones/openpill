@@ -93,3 +93,36 @@ async def test_mcp_semantic_reports_no_hits(monkeypatch):
     body = json.loads(await server_module.semantic_search("x", category="none"))
     assert body["count"] == 0
     assert "message" in body
+
+
+def test_close_match_outranks_fresher_unrelated_pill(monkeypatch):
+    from datetime import timedelta
+
+    monkeypatch.delenv("OPENPILL_SEMANTIC_MIN_SIMILARITY", raising=False)
+    old = datetime.now(timezone.utc) - timedelta(days=60)
+    col = FakeCollection()
+    col.docs = [
+        _pill("Old exact match", [1.0, 0.0], updated_at=old, created_at=old),
+        _pill("Fresh unrelated", [0.0, 1.0]),
+    ]
+    _patch(monkeypatch, api_module, col)
+    body = TestClient(api_module.app).get("/pills/semantic", params={"q": "x"}).json()
+    assert [p["title"] for p in body["pills"]] == ["Old exact match", "Fresh unrelated"]
+    assert body["pills"][0]["relevance_score"] == 1.0
+
+
+def test_superseded_pill_never_outranks_its_successor(monkeypatch):
+    monkeypatch.delenv("OPENPILL_SEMANTIC_MIN_SIMILARITY", raising=False)
+    old = _pill("Old fact, better wording match", [1.0, 0.0])
+    new = _pill(
+        "New fact",
+        [0.8, 0.6],
+        relations=[{"target_id": str(old["_id"]), "kind": "supersedes"}],
+    )
+    col = FakeCollection()
+    col.docs = [old, new, _pill("Unrelated", [0.0, 1.0])]
+    _patch(monkeypatch, api_module, col)
+    pills = TestClient(api_module.app).get("/pills/semantic", params={"q": "x"}).json()["pills"]
+    titles = [p["title"] for p in pills]
+    assert titles.index("New fact") < titles.index("Old fact, better wording match")
+    assert pills[titles.index("Old fact, better wording match")]["is_superseded"] is True

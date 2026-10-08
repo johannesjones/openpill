@@ -56,7 +56,7 @@
 - **`OPENPILL_SEMANTIC_MIN_SIMILARITY`** (default unset = no floor): drop vector hits below this cosine similarity, so an unrelated query can return nothing. Per call: `min_similarity` (REST query param, MCP argument).
 - The right value depends on the embedding model; measure it with `make retrieval-eval-live` before setting it.
 - `retrieval_metrics` reports `min_similarity` and `below_min_similarity` (how many pills the floor dropped).
-- Results are ordered by `retrieval_score` (0.6·confidence + 0.25·freshness + 0.15·similarity) after the top-`limit` similarity cut. Without a floor, a fresher but unrelated pill can outrank the best match; see the eval below.
+- Ranking: the top `limit` pills by similarity are ordered by `retrieval_score` = 0.6·relevance + 0.2·confidence + 0.2·freshness, minus penalties for conflicts (up to 0.2) and supersession (0.15). `relevance_score` is the similarity min-max normalized over all pills scanned, so close matches stay close and freshness/supersedes can order them. A superseded pill is never ranked above a pill that supersedes it. Single-pill reads (no query) keep 0.6·confidence + 0.25·freshness.
 
 ## Ports (defaults)
 

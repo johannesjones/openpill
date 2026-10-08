@@ -3,9 +3,9 @@ Semantic retrieval shared by the REST API (``GET /pills/semantic``) and the MCP
 ``semantic_search`` tool, so ranking changes happen in one place.
 
 Pipeline: vector candidates (brute-force cosine over active pills with an
-embedding) → optional similarity floor → top-k by similarity → superseded and
-conflict metadata → optional lexical fusion → optional graph expansion →
-order by ``retrieval_score``.
+embedding) → optional similarity floor → top-k by similarity → relevance-led
+``retrieval_score`` with superseded/conflict penalties → optional lexical
+fusion → optional graph expansion → order by ``retrieval_score``.
 """
 
 from __future__ import annotations
@@ -27,6 +27,14 @@ HYBRID_LEXICAL_LIMIT = int(os.getenv("HYBRID_LEXICAL_LIMIT", "30"))
 HYBRID_LEXICAL_FALLBACK_MIN_VECTOR = int(
     os.getenv("HYBRID_LEXICAL_FALLBACK_MIN_VECTOR", "3")
 )
+
+
+# Search ranking (Park et al. 2023, "Generative Agents": relevance, importance and
+# recency, with relevance min-max normalized over the candidate set). Relevance
+# dominates so a fresher but unrelated pill cannot outrank the best match.
+RELEVANCE_WEIGHT = 0.6
+CONFIDENCE_WEIGHT = 0.2
+FRESHNESS_WEIGHT = 0.2
 
 
 def default_min_similarity() -> float | None:
@@ -70,12 +78,22 @@ def attach_consistency_metadata(
     freshness: float,
     conflict_count: int,
     is_superseded: bool = False,
-    similarity: float | None = None,
+    relevance: float | None = None,
 ) -> dict:
-    """Attach retrieval-time consistency hints used by clients/agents."""
-    retrieval_score = 0.6 * confidence + 0.25 * freshness
-    if similarity is not None:
-        retrieval_score += 0.15 * similarity
+    """Attach retrieval-time consistency hints used by clients/agents.
+
+    With ``relevance`` (search results, in [0,1]) the score is relevance-led;
+    without it (single-pill reads) it reflects confidence and freshness only.
+    """
+    if relevance is not None:
+        retrieval_score = (
+            RELEVANCE_WEIGHT * relevance
+            + CONFIDENCE_WEIGHT * confidence
+            + FRESHNESS_WEIGHT * freshness
+        )
+        payload["relevance_score"] = round(relevance, 4)
+    else:
+        retrieval_score = 0.6 * confidence + 0.25 * freshness
     if conflict_count > 0:
         retrieval_score -= min(0.2, 0.05 * conflict_count)
     if is_superseded:
@@ -99,15 +117,47 @@ def attach_consistency_metadata(
     return payload
 
 
-def _score_row(row: dict, *, is_superseded: bool = False, similarity: float | None = None) -> dict:
+def _score_row(row: dict, *, is_superseded: bool, relevance: float) -> dict:
     return attach_consistency_metadata(
         row,
         confidence=float(row.get("confidence", 1.0)),
         freshness=freshness_score(row.get("updated_at")),
         conflict_count=count_conflict_relations(row),
         is_superseded=is_superseded,
-        similarity=similarity,
+        relevance=relevance,
     )
+
+
+def _relevance_scale(similarities: list[float]):
+    """Min-max normalize similarity over the scanned pills; clamp to [0,1]."""
+    lo = min(similarities, default=0.0)
+    hi = max(similarities, default=0.0)
+
+    def scale(sim: float) -> float:
+        if hi <= lo:
+            return 1.0 if sim >= hi and similarities else 0.0
+        return max(0.0, min(1.0, (sim - lo) / (hi - lo)))
+
+    return scale
+
+
+def _place_superseded_after_successors(
+    rows: list[dict], superseded_by: dict[str, set[str]]
+) -> list[dict]:
+    """Keep score order, but never rank a superseded pill above a pill that
+    supersedes it: move it to just after its last-ranked successor in ``rows``."""
+    ordered = list(rows)
+    for row in rows:
+        successors = superseded_by.get(row["_id"], set())
+        if not successors:
+            continue
+        ids = [r["_id"] for r in ordered]
+        last = max((ids.index(sid) for sid in successors if sid in ids), default=-1)
+        here = ids.index(row["_id"])
+        if last > here:
+            ordered.pop(here)
+            ordered.insert(last, row)  # `last` shifted down by one after the pop
+    return ordered
 
 
 # ---------------------------------------------------------------------------
@@ -138,15 +188,15 @@ async def semantic_retrieve(
         filter_doc["category"] = category
 
     candidates: list[dict] = []
-    superseded_ids: set[str] = set()
-    scanned = 0
+    superseded_by: dict[str, set[str]] = {}
+    scanned_similarities: list[float] = []
     async for doc in col.find(filter_doc):
-        scanned += 1
         # Supersedes edges count even when the superseding pill is not a hit.
         for rel in doc.get("relations") or []:
             if rel.get("kind") == "supersedes" and rel.get("target_id"):
-                superseded_ids.add(rel["target_id"])
+                superseded_by.setdefault(rel["target_id"], set()).add(str(doc["_id"]))
         score = cosine_similarity(query_embedding, doc["embedding"])
+        scanned_similarities.append(score)
         if min_similarity is not None and score < min_similarity:
             continue
         row = serialize_pill_doc(doc)
@@ -155,8 +205,15 @@ async def semantic_retrieve(
 
     candidates.sort(key=lambda d: d["similarity"], reverse=True)
     results = candidates[:limit]
+    # Normalize over everything scanned, not just the hits: close matches stay
+    # close (so freshness and supersedes can order them), unrelated pills stay low.
+    relevance = _relevance_scale(scanned_similarities)
     for row in results:
-        _score_row(row, is_superseded=row["_id"] in superseded_ids, similarity=row["similarity"])
+        _score_row(
+            row,
+            is_superseded=row["_id"] in superseded_by,
+            relevance=relevance(row["similarity"]),
+        )
 
     lexical_candidates: list[dict] = []
     fusion_enabled = hybrid or HYBRID_RETRIEVAL_ENABLED
@@ -187,7 +244,7 @@ async def semantic_retrieve(
             rid = row["_id"]
             if rid not in merged:
                 row["similarity"] = 0.0
-                _score_row(row, is_superseded=rid in superseded_ids, similarity=0.0)
+                _score_row(row, is_superseded=rid in superseded_by, relevance=0.0)
                 merged[rid] = row
             lex_norm = float(row.get("lexical_score", 0.0)) / max_lex
             vec = float(merged[rid].get("similarity", 0.0))
@@ -215,12 +272,12 @@ async def semantic_retrieve(
             if "retrieval_score" not in row:
                 _score_row(
                     row,
-                    is_superseded=row["_id"] in superseded_ids,
-                    similarity=float(row.get("similarity", 0.0)),
+                    is_superseded=row["_id"] in superseded_by,
+                    relevance=relevance(float(row.get("similarity", 0.0))),
                 )
 
     results.sort(key=lambda d: d.get("retrieval_score", 0.0), reverse=True)
-    final = results[:max_nodes]
+    final = _place_superseded_after_successors(results, superseded_by)[:max_nodes]
     return {
         "count": len(final),
         "pills": final,
@@ -230,6 +287,6 @@ async def semantic_retrieve(
             "vector_candidates": len(candidates),
             "lexical_candidates": len(lexical_candidates),
             "min_similarity": min_similarity,
-            "below_min_similarity": scanned - len(candidates),
+            "below_min_similarity": len(scanned_similarities) - len(candidates),
         },
     }
