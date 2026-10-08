@@ -89,6 +89,7 @@ Pills can carry a **`namespace`**, a path like `jjones/job_tracker` (letters, di
 - **By id:** get, PATCH, DELETE and undo-consolidation answer 404 when the pill lies outside the given namespace.
 - **Isolation:** dedup, same-source merges, auto-links, janitor and watchdog only compare pills in the **same exact** namespace, and merged pills keep it. Graph expansion in semantic search stays under the read prefix.
 - **MCP:** `OPENPILL_MCP_NAMESPACE` binds one MCP server process to a prefix, like a bound API key (MCP itself has no auth).
+- **Adopting namespaces on existing data:** a client that starts sending `namespace` no longer sees its old global pills. Move them first: `python scripts/move_to_namespace.py --category job_application --namespace jjones/job_tracker` (dry run), then add `--apply`.
 
 ## Embedding text override (`embed_text`)
 

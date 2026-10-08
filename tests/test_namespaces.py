@@ -201,3 +201,28 @@ async def test_janitor_groups_by_namespace(monkeypatch):
     col.docs = [_doc("a"), _doc("b", ["alice"]), _doc("c", ["alice"])]
     groups = await fetch_pills_by_category(col)
     assert {k: len(v) for k, v in groups.items()} == {"notes": 1, "alice::notes": 2}
+
+
+@pytest.mark.asyncio
+async def test_move_to_namespace_moves_only_global_pills_of_the_category():
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "move_to_namespace", Path(__file__).resolve().parents[1] / "scripts" / "move_to_namespace.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    col = FakeCollection()
+    col.docs = [
+        _doc("legacy app", category="job_application"),
+        _doc("already moved", ["other"], category="job_application"),
+        _doc("other category"),
+    ]
+    assert await module.move("job_application", ["jjones", "job_tracker"], apply=False, col=col) == 1
+    assert "namespace" not in col.docs[0]
+    assert await module.move("job_application", ["jjones", "job_tracker"], apply=True, col=col) == 1
+    assert col.docs[0]["namespace"] == ["jjones", "job_tracker"]
+    assert col.docs[1]["namespace"] == ["other"]
+    assert "namespace" not in col.docs[2]
