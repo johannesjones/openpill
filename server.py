@@ -28,7 +28,7 @@ from mcp.server.fastmcp import FastMCP  # noqa: E402
 
 from db import get_collection  # noqa: E402
 from embeddings import embedding_text_for_doc, get_embedding
-from models import KnowledgePill, PillSource, PillStatus, SourceType
+from models import DATE_FIELDS, KnowledgePill, PillSource, PillStatus, SourceType
 from namespaces import (
     NamespaceError,
     format_namespace,
@@ -40,6 +40,7 @@ from namespaces import (
 )
 from pill_relations import list_active_conflict_pairs, neighbors_for_pill
 from retrieval import semantic_retrieve
+from temporal import history_push, parse_dt, rewrites_text, validity_filter
 
 logger = logging.getLogger("openpill.mcp")
 def _namespace(requested: Optional[str]) -> list[str] | None:
@@ -73,6 +74,7 @@ async def search_pills(
     status: str = "active",
     limit: int = 20,
     namespace: Optional[str] = None,
+    include_invalid: bool = False,
 ) -> str:
     """Search knowledge pills by full-text query, category, or tags.
 
@@ -83,6 +85,7 @@ async def search_pills(
         status:   Filter by status – "active" (default), "archived", or "deprecated".
         limit:    Max results to return (default 20, max 100).
         namespace: Namespace prefix (default: all, or OPENPILL_MCP_NAMESPACE).
+        include_invalid: Also return pills that are no longer valid (invalid_at passed).
 
     Returns:
         JSON array of matching knowledge pills.
@@ -95,6 +98,8 @@ async def search_pills(
     limit = min(limit, 100)
 
     filter_doc: dict = {"status": status, **prefix_filter(ns)}
+    if not include_invalid:
+        filter_doc.update(validity_filter())
 
     if query:
         filter_doc["$text"] = {"$search": query}
@@ -105,13 +110,13 @@ async def search_pills(
     if tags:
         filter_doc["tags"] = {"$all": tags}
 
-    projection = {"embedding": 0}
+    projection = {"embedding": 0, "history": 0}
 
     cursor = col.find(filter_doc, projection).sort("created_at", -1).limit(limit)
     results = []
     async for doc in cursor:
         doc["_id"] = str(doc["_id"])
-        for key in ("created_at", "updated_at", "expires_at"):
+        for key in DATE_FIELDS:
             if isinstance(doc.get(key), datetime):
                 doc[key] = doc[key].isoformat()
         results.append(doc)
@@ -154,7 +159,7 @@ async def get_pill(pill_id: str, namespace: Optional[str] = None) -> str:
         return json.dumps({"error": "Pill not found."})
 
     doc["_id"] = str(doc["_id"])
-    for key in ("created_at", "updated_at", "expires_at"):
+    for key in DATE_FIELDS:
         if isinstance(doc.get(key), datetime):
             doc[key] = doc[key].isoformat()
 
@@ -189,7 +194,7 @@ async def get_pill_neighbors(pill_id: str, namespace: Optional[str] = None) -> s
     if center is None:
         return json.dumps({"error": "Pill not found."})
     for row in outgoing + incoming:
-        for key in ("created_at", "updated_at", "expires_at"):
+        for key in DATE_FIELDS:
             if isinstance(row.get(key), datetime):
                 row[key] = row[key].isoformat()
     return json.dumps(
@@ -214,6 +219,7 @@ async def create_pill(
     confidence: float = 1.0,
     namespace: Optional[str] = None,
     embed_text: Optional[str] = None,
+    valid_at: Optional[str] = None,
 ) -> str:
     """Store a new knowledge pill in the database.
 
@@ -229,6 +235,7 @@ async def create_pill(
                           OPENPILL_MCP_NAMESPACE).
         embed_text:       Text to embed instead of title + content (e.g. a
                           readable summary when content is JSON).
+        valid_at:         ISO datetime when the fact became true (default: now).
 
     Returns:
         JSON with the new pill's ID and a confirmation.
@@ -248,6 +255,7 @@ async def create_pill(
         confidence=confidence,
         namespace=list(ns or []),
         embed_text=embed_text or None,
+        valid_at=parse_dt(valid_at),
     )
 
     try:
@@ -285,6 +293,8 @@ async def update_pill(
     status: Optional[str] = None,
     embed_text: Optional[str] = None,
     namespace: Optional[str] = None,
+    valid_at: Optional[str] = None,
+    invalid_at: Optional[str] = None,
 ) -> str:
     """Update selected fields of an existing pill.
 
@@ -302,6 +312,9 @@ async def update_pill(
         status:   Replacement status, e.g. "active", "archived".
         embed_text: Text to embed instead of title + content; "" clears it.
         namespace:  Only update the pill if it lies under this prefix.
+        valid_at:   ISO datetime when the fact became true.
+        invalid_at: ISO datetime when the fact stopped being true ("now" for now,
+                    "" to make it valid again). Invalid pills are hidden from searches.
 
     Returns:
         JSON of the updated pill (embedding omitted). Errors: ``{"error": "..."}``.
@@ -335,6 +348,16 @@ async def update_pill(
         update_fields["status"] = status
     if embed_text is not None:
         update_fields["embed_text"] = embed_text or None
+    for key, raw in (("valid_at", valid_at), ("invalid_at", invalid_at)):
+        if raw is None:
+            continue
+        if raw == "":
+            update_fields[key] = None
+            continue
+        value = datetime.now(timezone.utc) if raw == "now" else parse_dt(raw)
+        if value is None:
+            return json.dumps({"error": f"{key} must be an ISO datetime, 'now' or ''."})
+        update_fields[key] = value
 
     if update_fields:
         new_text = embedding_text_for_doc({**doc, **update_fields})
@@ -348,7 +371,10 @@ async def update_pill(
                     exc,
                 )
         update_fields["updated_at"] = datetime.now(timezone.utc)
-        await col.update_one({"_id": oid}, {"$set": update_fields})
+        update: dict = {"$set": update_fields}
+        if rewrites_text(doc, update_fields):
+            update.update(history_push(doc, reason="update_pill"))
+        await col.update_one({"_id": oid}, update)
         doc = await col.find_one({"_id": oid}, {"embedding": 0})
         if doc is None:
             return json.dumps({"error": "Pill not found after update."})
@@ -356,7 +382,7 @@ async def update_pill(
         doc.pop("embedding", None)
 
     doc["_id"] = str(doc["_id"])
-    for key in ("created_at", "updated_at", "expires_at"):
+    for key in DATE_FIELDS:
         if isinstance(doc.get(key), datetime):
             doc[key] = doc[key].isoformat()
     return json.dumps(doc, ensure_ascii=False)
@@ -527,6 +553,7 @@ async def semantic_search(
     hybrid: bool = False,
     min_similarity: Optional[float] = None,
     namespace: Optional[str] = None,
+    include_invalid: bool = False,
 ) -> str:
     """Vector search over pills by meaning (primary recall tool for memory).
 
@@ -547,6 +574,7 @@ async def semantic_search(
         min_similarity:    Drop hits below this cosine similarity (default: env
                            OPENPILL_SEMANTIC_MIN_SIMILARITY, unset = no floor).
         namespace:         Namespace prefix (default: all, or OPENPILL_MCP_NAMESPACE).
+        include_invalid:   Also return invalidated pills (flagged, ranked last).
 
     Returns:
         JSON: `count`, `pills` (each with `similarity`, `retrieval_score`,
@@ -577,6 +605,7 @@ async def semantic_search(
         hybrid=hybrid,
         min_similarity=min_similarity,
         namespace=ns,
+        include_invalid=include_invalid,
     )
     if not result["count"]:
         result["message"] = "No matching pills found."

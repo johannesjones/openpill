@@ -37,11 +37,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import re
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Literal
 
 from bson import ObjectId
 from bson.errors import InvalidId
@@ -59,7 +61,8 @@ from models import (
     normalize_relation_kind,
 )
 from namespaces import exact_filter
-from pill_relations import add_bidirectional_relation, find_related_candidates
+from pill_relations import add_bidirectional_relation, find_related_candidates, relation_doc
+from temporal import history_push, validity_filter
 
 MODEL = os.getenv("EXTRACTOR_MODEL", "gpt-4o-mini")
 MODEL_POLICY = os.getenv("EXTRACTOR_MODEL_POLICY", "local_first").strip().lower()
@@ -173,6 +176,20 @@ def _get_related_max_links() -> int:
 
 def _link_on_insert() -> bool:
     return os.getenv("EXTRACTOR_LINK_ON_INSERT", "true").lower() in ("1", "true", "yes")
+
+
+def _update_policy() -> str:
+    """``OPENPILL_UPDATE_POLICY``: ``threshold`` (default) or ``llm``."""
+    value = os.getenv("OPENPILL_UPDATE_POLICY", "threshold").strip().lower()
+    return value if value in ("threshold", "llm") else "threshold"
+
+
+def _update_candidate_min_similarity() -> float:
+    return float(os.getenv("OPENPILL_UPDATE_CANDIDATE_MIN_SIMILARITY", "0.75"))
+
+
+def _apply_supersedes_hints() -> bool:
+    return os.getenv("OPENPILL_APPLY_SUPERSEDES_HINTS", "false").lower() in ("1", "true", "yes")
 
 
 def _strict_extraction_schema_enabled() -> bool:
@@ -587,6 +604,7 @@ async def find_near_duplicates(
             "status": "active",
             "embedding": {"$exists": True, "$ne": None},
             **exact_filter(namespace),
+            **validity_filter(),
         },
         {"title": 1, "embedding": 1},
     ):
@@ -595,6 +613,242 @@ async def find_near_duplicates(
             duplicates.append({"id": str(doc["_id"]), "title": doc["title"], "similarity": round(score, 4)})
     duplicates.sort(key=lambda x: x["similarity"], reverse=True)
     return duplicates
+
+
+# ---------------------------------------------------------------------------
+# Update decisions (Mem0-style): ADD / UPDATE / INVALIDATE / NOOP per fact
+# ---------------------------------------------------------------------------
+
+UPDATE_DECISION_PROMPT = """You maintain a long-term memory of atomic facts.
+A NEW fact was extracted. Compare it with EXISTING memories (same namespace) and choose one operation:
+
+- ADD: the new fact is new information; keep existing memories as they are.
+- UPDATE: the new fact refines or extends ONE existing memory about the same thing, and both stay true.
+  Give the merged title and content.
+- INVALIDATE: the new fact contradicts or replaces ONE existing memory, which is no longer true
+  (e.g. a changed time, decision, preference or status). The old memory is kept as history.
+- NOOP: the new fact adds nothing beyond ONE existing memory.
+
+Prefer ADD when unsure. Never invent facts. Return only JSON:
+{"operation": "ADD|UPDATE|INVALIDATE|NOOP", "target_id": "<existing id or null>",
+ "title": "<merged title, UPDATE only, else null>", "content": "<merged content, UPDATE only, else null>",
+ "reason": "<one short sentence>"}"""
+
+
+class UpdateDecision(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    operation: Literal["ADD", "UPDATE", "INVALIDATE", "NOOP"]
+    target_id: str | None = None
+    title: str | None = Field(default=None, max_length=200)
+    content: str | None = None
+    reason: str = Field(default="", max_length=400)
+
+
+async def update_candidates(
+    embedding: list[float], col, *, namespace: list[str] | None, limit: int = 5
+) -> list[dict]:
+    """Most similar valid pills in the same namespace, above the candidate floor."""
+    floor = _update_candidate_min_similarity()
+    rows = []
+    async for doc in col.find(
+        {
+            "status": "active",
+            "embedding": {"$exists": True, "$ne": None},
+            **exact_filter(namespace),
+            **validity_filter(),
+        },
+        {"title": 1, "content": 1, "embedding": 1, "updated_at": 1, "valid_at": 1},
+    ):
+        score = cosine_similarity(embedding, doc["embedding"])
+        if score >= floor:
+            rows.append((score, doc))
+    rows.sort(key=lambda r: r[0], reverse=True)
+    return [
+        {
+            "id": str(doc["_id"]),
+            "title": doc.get("title", ""),
+            "content": doc.get("content", ""),
+            "as_of": str(doc.get("valid_at") or doc.get("updated_at") or ""),
+            "similarity": round(score, 4),
+        }
+        for score, doc in rows[:limit]
+    ]
+
+
+async def _complete_json(model: str, system: str, user: str) -> str:
+    from litellm import acompletion
+
+    response = await acompletion(
+        model=model,
+        messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+        temperature=0.0,
+        response_format={"type": "json_object"},
+    )
+    return response.choices[0].message.content
+
+
+async def decide_update(
+    fact: "ExtractedFact",
+    embedding: list[float],
+    col,
+    *,
+    namespace: list[str] | None,
+    model: str,
+) -> UpdateDecision | None:
+    """Ask the LLM what the new fact does to similar memories.
+
+    No similar memories → ADD without an LLM call. Returns None when the answer is
+    unusable (bad JSON, unknown target), so the caller keeps the threshold path.
+    """
+    candidates = await update_candidates(embedding, col, namespace=namespace)
+    if not candidates:
+        return UpdateDecision(operation="ADD", reason="no similar memories")
+    user = json.dumps(
+        {
+            "new_fact": {"title": fact.title, "content": fact.content},
+            "existing": [{k: c[k] for k in ("id", "title", "content", "as_of")} for c in candidates],
+        },
+        ensure_ascii=False,
+    )
+    try:
+        decision = UpdateDecision.model_validate_json(
+            await _complete_json(model, UPDATE_DECISION_PROMPT, user)
+        )
+    except Exception as exc:  # provider errors and bad JSON both fall back
+        print(f"  DECISION failed, using threshold dedup: {exc}")
+        return None
+    ids = {c["id"] for c in candidates}
+    if decision.operation in ("UPDATE", "INVALIDATE") and decision.target_id not in ids:
+        print(f"  DECISION {decision.operation} named an unknown target; using threshold dedup.")
+        return None
+    return decision
+
+
+async def invalidate_and_link(col, new_id, old_id: str, *, reason: str) -> None:
+    """Mark ``old_id`` as no longer valid and record that ``new_id`` supersedes it.
+
+    The edge is directed (new → old); a symmetric edge would mark both as superseded.
+    """
+    await col.update_one(
+        {"_id": ObjectId(old_id)},
+        {"$set": {"invalid_at": datetime.now(timezone.utc), "invalidated_reason": reason}},
+    )
+    new_oid = new_id if isinstance(new_id, ObjectId) else ObjectId(new_id)
+    await col.update_one(
+        {"_id": new_oid},
+        {"$addToSet": {"relations": relation_doc(old_id, PillRelationKind.SUPERSEDES)}},
+    )
+
+
+async def supersedes_hint_targets(
+    col, fact: "ExtractedFact", *, namespace: list[str] | None, exclude_id
+) -> list[str]:
+    """Pills named by the fact's ``supersedes`` relation hints (exact title match, same
+    namespace and category, still valid)."""
+    names = {
+        h.target_concept.strip().lower()
+        for h in fact.relation_hints
+        if normalize_relation_kind(h.kind) == PillRelationKind.SUPERSEDES
+    }
+    if not names:
+        return []
+    targets = []
+    async for doc in col.find(
+        {
+            "status": "active",
+            "category": fact.category,
+            **exact_filter(namespace),
+            **validity_filter(),
+        },
+        {"title": 1},
+    ):
+        if doc["_id"] != exclude_id and (doc.get("title") or "").strip().lower() in names:
+            targets.append(str(doc["_id"]))
+    return targets
+
+
+async def apply_update_policy(
+    col,
+    fact: "ExtractedFact",
+    embedding: list[float],
+    *,
+    namespace: list[str] | None,
+    model: str,
+    dry_run: bool,
+    report: dict,
+) -> tuple[bool, str | None]:
+    """Run the LLM update decision for one fact.
+
+    Returns ``(handled, supersede_target)``: ``handled`` means the fact was fully
+    processed (UPDATE / NOOP); otherwise the caller inserts it as usual and, for
+    INVALIDATE, invalidates ``supersede_target`` after the insert.
+    """
+    decision = await decide_update(fact, embedding, col, namespace=namespace, model=model)
+    if decision is None:
+        return False, None
+    report["decisions"].append(
+        {
+            "title": fact.title,
+            "operation": decision.operation,
+            "target_id": decision.target_id,
+            "reason": decision.reason,
+        }
+    )
+    print(f"  DECISION {decision.operation}: {fact.title} ({decision.reason})")
+    if decision.operation == "NOOP":
+        report["skipped_duplicate"].append(
+            {"title": fact.title, "similar_to": None, "similar_pill_id": decision.target_id}
+        )
+        return True, None
+    if decision.operation == "UPDATE":
+        merged = fact.model_copy(
+            update={
+                "title": decision.title or fact.title,
+                "content": decision.content or fact.content,
+            }
+        )
+        if not dry_run:
+            unchanged = (merged.title, merged.content) == (fact.title, fact.content)
+            vector = (
+                embedding
+                if unchanged
+                else await get_embedding(embed_text_for_pill(merged.title, merged.content))
+            )
+            await rewrite_pill_from_fact(
+                col, decision.target_id, merged, vector, reason="llm_update"
+            )
+        report["updated"].append({"title": merged.title, "pill_id": decision.target_id})
+        return True, None
+    if decision.operation == "INVALIDATE":
+        return False, decision.target_id
+    return False, None
+
+
+async def rewrite_pill_from_fact(
+    col, pill_id: str, fact: "ExtractedFact", embedding: list[float], *, reason: str
+) -> None:
+    """Overwrite a pill with a newly extracted fact, keeping the old text in history."""
+    oid = ObjectId(pill_id)
+    previous = await col.find_one(
+        {"_id": oid}, {"title": 1, "content": 1, "category": 1, "updated_at": 1}
+    )
+    prov = _extraction_provenance_from_fact(fact)
+    update: dict = {
+        "$set": {
+            "title": fact.title,
+            "content": fact.content,
+            "category": fact.category,
+            "tags": fact.tags,
+            "confidence": fact.confidence,
+            "embedding": embedding,
+            "updated_at": datetime.now(timezone.utc),
+            "extraction_meta": prov.model_dump(mode="json") if prov else None,
+        }
+    }
+    if previous:
+        update.update(history_push(previous, reason=reason))
+    await col.update_one({"_id": oid}, update)
 
 
 def _merge_same_source_enabled() -> bool:
@@ -655,6 +909,12 @@ async def run_extraction(
     skipped_confidence = []
     skipped_duplicate = []
     skipped_short = []
+    report: dict = {
+        "decisions": [],
+        "updated": [],
+        "invalidated": [],
+        "skipped_duplicate": skipped_duplicate,
+    }
     expected_ref = f"extractor:{source_reference}"
 
     for fact in facts[:max_pills]:
@@ -668,6 +928,20 @@ async def run_extraction(
             continue
 
         embedding = await get_embedding(embed_text_for_pill(fact.title, fact.content))
+        supersede_target = None
+        if _update_policy() == "llm":
+            handled, supersede_target = await apply_update_policy(
+                col, fact, embedding, namespace=namespace,
+                model=model_decision.model, dry_run=dry_run, report=report,
+            )
+            if handled:
+                continue
+            if supersede_target and not dry_run:
+                # Invalidate first so threshold dedup does not treat the old fact as a duplicate.
+                await col.update_one(
+                    {"_id": ObjectId(supersede_target)},
+                    {"$set": {"invalid_at": datetime.now(timezone.utc)}},
+                )
         dupes = await find_near_duplicates(embedding, col, namespace=namespace)
 
         if dupes:
@@ -687,24 +961,8 @@ async def run_extraction(
                         }
                     )
                 else:
-                    now = datetime.now(timezone.utc)
-                    prov = _extraction_provenance_from_fact(fact)
-                    await col.update_one(
-                        {"_id": ObjectId(merge_hit["id"])},
-                        {
-                            "$set": {
-                                "title": fact.title,
-                                "content": fact.content,
-                                "category": fact.category,
-                                "tags": fact.tags,
-                                "confidence": fact.confidence,
-                                "embedding": embedding,
-                                "updated_at": now,
-                                "extraction_meta": prov.model_dump(mode="json")
-                                if prov
-                                else None,
-                            }
-                        },
+                    await rewrite_pill_from_fact(
+                        col, merge_hit["id"], fact, embedding, reason="same_source_merge"
                     )
                     merged_same_source.append(
                         {
@@ -730,6 +988,8 @@ async def run_extraction(
         if dry_run:
             print(f"  WOULD INSERT: {fact.title} [{fact.category}] (conf={fact.confidence:.2f})")
             inserted.append(fact.title)
+            if supersede_target:
+                report["invalidated"].append({"pill_id": supersede_target, "superseded_by": None})
         else:
             prov = _extraction_provenance_from_fact(fact)
             pill = KnowledgePill(
@@ -747,6 +1007,15 @@ async def run_extraction(
             new_id = result.inserted_id
             inserted.append(fact.title)
             print(f"  INSERTED: {fact.title} (id: {new_id})")
+            targets = [supersede_target] if supersede_target else []
+            if _apply_supersedes_hints():
+                targets += await supersedes_hint_targets(
+                    col, fact, namespace=namespace, exclude_id=new_id
+                )
+            for old_id in dict.fromkeys(targets):
+                await invalidate_and_link(col, new_id, old_id, reason=f"superseded by {fact.title}")
+                report["invalidated"].append({"pill_id": old_id, "superseded_by": str(new_id)})
+                print(f"    INVALIDATED {old_id} (superseded)")
             if _link_on_insert() and _get_related_max_links() > 0:
                 dup_threshold = _get_duplicate_threshold(for_conversation=False)
                 low = _get_related_threshold()
@@ -781,6 +1050,9 @@ async def run_extraction(
     return {
         "inserted": inserted,
         "merged_same_source": merged_same_source,
+        "updated": report["updated"],
+        "invalidated": report["invalidated"],
+        "decisions": report["decisions"],
         "skipped_confidence": skipped_confidence,
         "skipped_duplicate": skipped_duplicate,
         "skipped_short": skipped_short,
@@ -859,6 +1131,12 @@ async def run_conversation_extraction(
     skipped_confidence = []
     skipped_duplicate = []
     skipped_short = []
+    report: dict = {
+        "decisions": [],
+        "updated": [],
+        "invalidated": [],
+        "skipped_duplicate": skipped_duplicate,
+    }
     expected_ref = f"conversation:{source_reference}"
 
     for fact in facts[:max_pills]:
@@ -872,6 +1150,20 @@ async def run_conversation_extraction(
             continue
 
         embedding = await get_embedding(embed_text_for_pill(fact.title, fact.content))
+        supersede_target = None
+        if _update_policy() == "llm":
+            handled, supersede_target = await apply_update_policy(
+                col, fact, embedding, namespace=namespace,
+                model=extraction_model.model, dry_run=dry_run, report=report,
+            )
+            if handled:
+                continue
+            if supersede_target and not dry_run:
+                # Invalidate first so threshold dedup does not treat the old fact as a duplicate.
+                await col.update_one(
+                    {"_id": ObjectId(supersede_target)},
+                    {"$set": {"invalid_at": datetime.now(timezone.utc)}},
+                )
         dupes = await find_near_duplicates(
             embedding, col, threshold=conv_threshold, namespace=namespace
         )
@@ -893,24 +1185,8 @@ async def run_conversation_extraction(
                         }
                     )
                 else:
-                    now = datetime.now(timezone.utc)
-                    prov = _extraction_provenance_from_fact(fact)
-                    await col.update_one(
-                        {"_id": ObjectId(merge_hit["id"])},
-                        {
-                            "$set": {
-                                "title": fact.title,
-                                "content": fact.content,
-                                "category": fact.category,
-                                "tags": fact.tags,
-                                "confidence": fact.confidence,
-                                "embedding": embedding,
-                                "updated_at": now,
-                                "extraction_meta": prov.model_dump(mode="json")
-                                if prov
-                                else None,
-                            }
-                        },
+                    await rewrite_pill_from_fact(
+                        col, merge_hit["id"], fact, embedding, reason="same_source_merge"
                     )
                     merged_same_source.append(
                         {
@@ -936,6 +1212,8 @@ async def run_conversation_extraction(
         if dry_run:
             print(f"  WOULD INSERT: {fact.title} [{fact.category}] (conf={fact.confidence:.2f})")
             inserted.append(fact.title)
+            if supersede_target:
+                report["invalidated"].append({"pill_id": supersede_target, "superseded_by": None})
         else:
             prov = _extraction_provenance_from_fact(fact)
             pill = KnowledgePill(
@@ -953,6 +1231,15 @@ async def run_conversation_extraction(
             new_id = result.inserted_id
             inserted.append(fact.title)
             print(f"  INSERTED: {fact.title} (id: {new_id})")
+            targets = [supersede_target] if supersede_target else []
+            if _apply_supersedes_hints():
+                targets += await supersedes_hint_targets(
+                    col, fact, namespace=namespace, exclude_id=new_id
+                )
+            for old_id in dict.fromkeys(targets):
+                await invalidate_and_link(col, new_id, old_id, reason=f"superseded by {fact.title}")
+                report["invalidated"].append({"pill_id": old_id, "superseded_by": str(new_id)})
+                print(f"    INVALIDATED {old_id} (superseded)")
             if _link_on_insert() and _get_related_max_links() > 0:
                 dup_threshold = conv_threshold
                 low = _get_related_threshold()
@@ -987,6 +1274,9 @@ async def run_conversation_extraction(
     return {
         "inserted": inserted,
         "merged_same_source": merged_same_source,
+        "updated": report["updated"],
+        "invalidated": report["invalidated"],
+        "decisions": report["decisions"],
         "skipped_confidence": skipped_confidence,
         "skipped_duplicate": skipped_duplicate,
         "skipped_short": skipped_short,

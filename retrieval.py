@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 
 from embeddings import cosine_similarity
 from namespaces import prefix_filter
+from temporal import fact_time, is_invalid, now_utc, validity_filter
 from pill_relations import expand_semantic_neighbors_hops, serialize_pill_doc
 
 HYBRID_RETRIEVAL_ENABLED = os.getenv("HYBRID_RETRIEVAL_ENABLED", "false").lower() in (
@@ -122,11 +123,18 @@ def _score_row(row: dict, *, is_superseded: bool, relevance: float) -> dict:
     return attach_consistency_metadata(
         row,
         confidence=float(row.get("confidence", 1.0)),
-        freshness=freshness_score(row.get("updated_at")),
+        freshness=freshness_score(fact_time(row)),
         conflict_count=count_conflict_relations(row),
         is_superseded=is_superseded,
         relevance=relevance,
     )
+
+
+def _mark_invalid(row: dict) -> None:
+    row["is_invalid"] = True
+    note = f"This memory stopped being valid at {row.get('invalid_at')}; treat as history."
+    previous = row.get("consistency_warning")
+    row["consistency_warning"] = f"{previous} {note}" if previous else note
 
 
 def _relevance_scale(similarities: list[float]):
@@ -180,18 +188,24 @@ async def semantic_retrieve(
     hybrid: bool = False,
     min_similarity: float | None = None,
     namespace: list[str] | None = None,
+    include_invalid: bool = False,
 ) -> dict:
     """Run semantic retrieval and return ``{count, pills, retrieval_metrics}``.
 
     ``namespace`` restricts hits, keyword matches and graph neighbors to that prefix.
+    Invalidated pills (``invalid_at`` passed) are hidden unless ``include_invalid``;
+    then they are flagged ``is_invalid`` and ranked after every valid pill.
     """
     if min_similarity is None:
         min_similarity = default_min_similarity()
+    now = now_utc()
+    validity = {} if include_invalid else validity_filter(now)
 
     filter_doc: dict = {
         "status": "active",
         "embedding": {"$exists": True, "$ne": None},
         **prefix_filter(namespace),
+        **validity,
     }
     if category:
         filter_doc["category"] = category
@@ -234,6 +248,7 @@ async def semantic_retrieve(
             "status": "active",
             "$text": {"$search": query},
             **prefix_filter(namespace),
+            **validity,
         }
         if category:
             lexical_filter["category"] = category
@@ -290,7 +305,18 @@ async def semantic_retrieve(
                     relevance=relevance(float(row.get("similarity", 0.0))),
                 )
 
-    results.sort(key=lambda d: d.get("retrieval_score", 0.0), reverse=True)
+    if include_invalid:
+        for row in results:
+            if is_invalid(row, now):
+                _mark_invalid(row)
+    else:
+        # Graph expansion can reach invalidated neighbors; drop them.
+        results = [row for row in results if not is_invalid(row, now)]
+
+    results.sort(
+        key=lambda d: (not d.get("is_invalid", False), d.get("retrieval_score", 0.0)),
+        reverse=True,
+    )
     final = _place_superseded_after_successors(results, superseded_by)[:max_nodes]
     return {
         "count": len(final),

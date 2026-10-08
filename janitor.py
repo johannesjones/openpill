@@ -47,6 +47,7 @@ from embeddings import embed_text_for_pill, get_embedding
 from models import KnowledgePill, PillRelationKind, PillSource, PillStatus, SourceType
 from namespaces import format_namespace
 from pill_relations import add_bidirectional_relation, rewire_relations_on_merge
+from temporal import is_invalid
 
 MODEL = os.getenv("JANITOR_MODEL", "gpt-4o-mini")
 MODEL_POLICY = os.getenv("JANITOR_MODEL_POLICY", "local_first").strip().lower()
@@ -275,8 +276,8 @@ async def fetch_pills_by_category(col) -> dict[str, list[dict]]:
     excluded = excluded_categories()
     cursor = col.find({"status": "active"}, {"embedding": 0})
     async for doc in cursor:
-        if doc.get("category") in excluded:
-            continue
+        if doc.get("category") in excluded or is_invalid(doc):
+            continue  # invalidated pills are history, never merge candidates
         doc["_id"] = str(doc["_id"])
         ns = format_namespace(doc.get("namespace"))
         groups[f"{ns}::{doc['category']}" if ns else doc["category"]].append(doc)

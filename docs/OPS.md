@@ -131,6 +131,24 @@ Unknown values in legacy data are **normalized to `related`** when relations are
 
 A pill with `expires_at` in the past is **archived** (`status=archived`), not deleted. The janitor does this at the start of every non-dry-run (`python janitor.py --apply`, or `--daemon`). Startup drops the old Mongo TTL index `ttl_expires` (which hard-deleted documents) and recreates it as a plain index.
 
+## Temporal validity and history
+
+Facts change; OpenPill keeps the old version instead of deleting or silently overwriting it (after Zep/Graphiti):
+
+- **`valid_at`**: when the fact became true (optional on create; freshness uses it when set, else `updated_at`).
+- **`invalid_at`**: when it stopped being true. Invalidated pills stay `active` in the store but are hidden from search, semantic search, dedup, links, janitor and watchdog. `include_invalid=true` (REST query / MCP argument) shows them, flagged `is_invalid` with a warning and ranked after every valid pill. Set or clear it with `PATCH /pills/{id}` (`"invalid_at": "<ISO>"` / `null`) or MCP `update_pill(invalid_at="now" | "<ISO>" | "")`.
+- **`history`**: every rewrite of title or content (PATCH, MCP `update_pill`, same-source merge, LLM UPDATE) appends the previous version (`title`, `content`, `category`, `previous_updated_at`, `replaced_at`, `reason`), keeping the last 20. Returned by `GET /pills/{id}` and MCP `get_pill` only; list and search responses omit it.
+
+## Update decisions on ingest (opt-in)
+
+- **`OPENPILL_UPDATE_POLICY`** = `threshold` (default: near-duplicates above the threshold are skipped or merged by source, as before) or `llm`. With `llm`, each extracted fact is compared with up to 5 valid pills in the same namespace (cosine ≥ **`OPENPILL_UPDATE_CANDIDATE_MIN_SIMILARITY`**, default `0.75`); one LLM call (the extractor model) picks:
+  - **ADD**: insert as usual (no similar pills → ADD without an LLM call),
+  - **UPDATE**: rewrite the named pill with the merged title/content (old text goes to `history`),
+  - **INVALIDATE**: insert the new fact, set `invalid_at` on the named pill and add a directed `supersedes` edge new → old,
+  - **NOOP**: skip.
+  An unusable answer (bad JSON, unknown target, provider error) falls back to the threshold path. Ingest responses add `decisions`, `updated` and `invalidated`.
+- **`OPENPILL_APPLY_SUPERSEDES_HINTS`** (default `false`): with the strict extraction schema, a `supersedes` relation hint whose `target_concept` exactly matches (case-insensitive) the title of a valid pill in the same namespace and category invalidates that pill after the new one is inserted.
+
 ## Same-source merge on ingest (dedup → update)
 
 When **`OPENPILL_MERGE_SAME_SOURCE`** is `true` (default), ingest runs compare near-duplicates to the pill’s **`source.reference`**:

@@ -12,8 +12,9 @@ from bson import ObjectId
 from bson.errors import InvalidId
 
 from embeddings import cosine_similarity
-from models import PillRelationKind, normalize_relation_kind
+from models import DATE_FIELDS, PillRelationKind, normalize_relation_kind
 from namespaces import exact_filter, is_within, prefix_filter
+from temporal import validity_filter
 
 
 def sanitize_relations(relations: list[dict] | None) -> list[dict]:
@@ -185,6 +186,7 @@ async def find_related_candidates(
             "category": category,
             "embedding": {"$exists": True, "$ne": None},
             **exact_filter(namespace),
+            **validity_filter(),
         },
         {"title": 1, "embedding": 1},
     ):
@@ -253,7 +255,9 @@ async def neighbors_for_pill(
 
     rels = center.get("relations") or []
     target_ids = [r.get("target_id") for r in rels if r.get("target_id")]
-    targets = await fetch_pills_by_ids(col, target_ids, projection={"embedding": 0})
+    targets = await fetch_pills_by_ids(
+        col, target_ids, projection={"embedding": 0, "history": 0}
+    )
 
     outgoing: list[dict] = []
     for r in rels:
@@ -270,7 +274,7 @@ async def neighbors_for_pill(
     incoming_raw: list[dict] = []
     async for doc in col.find(
         {"relations.target_id": pill_id, "status": "active", **prefix_filter(namespace)},
-        {"embedding": 0},
+        {"embedding": 0, "history": 0},
     ):
         incoming_raw.append(doc)
 
@@ -293,10 +297,11 @@ def serialize_pill_doc(doc: dict) -> dict:
     """Strip embedding and normalize _id / datetimes for JSON."""
     d = doc.copy()
     d["_id"] = str(d["_id"])
-    for key in ("created_at", "updated_at", "expires_at"):
+    for key in DATE_FIELDS:
         if isinstance(d.get(key), datetime):
             d[key] = d[key].isoformat()
     d.pop("embedding", None)
+    d.pop("history", None)  # full history only on single-pill reads
     return d
 
 

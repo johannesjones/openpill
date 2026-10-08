@@ -30,6 +30,10 @@ def _match(doc: dict, q: dict) -> bool:
     for k, v in q.items():
         if k == "$text":
             return False  # no text index in the fake
+        if k == "$or":
+            if not any(_match(doc, sub) for sub in v):
+                return False
+            continue
         if k == "_id":
             if isinstance(v, dict):
                 if "$in" in v and doc.get("_id") not in v["$in"]:
@@ -59,6 +63,8 @@ def _match(doc: dict, q: dict) -> bool:
             if "$ne" in v and val == v["$ne"]:
                 return False
             if "$lte" in v and (val is None or not val <= v["$lte"]):
+                return False
+            if "$gt" in v and (val is None or not val > v["$gt"]):
                 return False
             if "$in" in v and val not in v["$in"]:
                 return False
@@ -111,8 +117,7 @@ class FakeCollection:
     async def update_one(self, query: dict, update: dict) -> MagicResult:
         for doc in self.docs:
             if _match(doc, query):
-                if "$set" in update:
-                    doc.update(update["$set"])
+                _apply_update(doc, update)
                 return MagicResult(1)
         return MagicResult(0)
 
@@ -120,8 +125,7 @@ class FakeCollection:
         n = 0
         for doc in self.docs:
             if _match(doc, query):
-                if "$set" in update:
-                    doc.update(update["$set"])
+                _apply_update(doc, update)
                 n += 1
         return MagicResult(n)
 
@@ -130,6 +134,21 @@ class FakeCollection:
         doc = {**doc, "_id": _id}
         self.docs.append(doc)
         return MagicInsert(_id)
+
+
+def _apply_update(doc: dict, update: dict) -> None:
+    doc.update(update.get("$set", {}))
+    for key, value in update.get("$addToSet", {}).items():
+        values = list(doc.get(key) or [])
+        if value not in values:
+            values.append(value)
+        doc[key] = values
+    for key, spec in update.get("$push", {}).items():
+        items = spec["$each"] if isinstance(spec, dict) and "$each" in spec else [spec]
+        values = list(doc.get(key) or []) + list(items)
+        if isinstance(spec, dict) and "$slice" in spec:
+            values = values[spec["$slice"]:] if spec["$slice"] < 0 else values[: spec["$slice"]]
+        doc[key] = values
 
 
 def _project(doc: dict, projection: dict | None) -> dict:

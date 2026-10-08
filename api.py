@@ -38,7 +38,14 @@ from pydantic import BaseModel, Field  # noqa: E402
 
 from db import close, get_collection  # noqa: E402
 from embeddings import embedding_text_for_doc, get_embedding
-from models import KnowledgePill, PillRelation, PillSource, PillStatus, SourceType
+from models import (
+    DATE_FIELDS,
+    KnowledgePill,
+    PillRelation,
+    PillSource,
+    PillStatus,
+    SourceType,
+)
 from namespaces import (
     NamespaceError,
     api_key_namespaces,
@@ -55,6 +62,7 @@ from retrieval import (
     freshness_score,
     semantic_retrieve,
 )
+from temporal import fact_time, history_push, is_invalid, rewrites_text, validity_filter
 from topics import build_topic_snapshot
 
 logger = logging.getLogger("openpill.api")
@@ -154,6 +162,9 @@ class CreatePillRequest(BaseModel):
     embed_text: Optional[str] = Field(
         default=None, description="Text to embed instead of title + content"
     )
+    valid_at: Optional[datetime] = Field(
+        default=None, description="When the fact became true (default: now)"
+    )
 
 
 class IngestRequest(BaseModel):
@@ -178,7 +189,7 @@ class ConversationIngestRequest(BaseModel):
 def _serialize_doc(doc: dict) -> dict:
     """Convert a MongoDB document to a JSON-serializable dict."""
     doc["_id"] = str(doc["_id"])
-    for key in ("created_at", "updated_at", "expires_at"):
+    for key in DATE_FIELDS:
         if isinstance(doc.get(key), datetime):
             doc[key] = doc[key].isoformat()
     doc.pop("embedding", None)
@@ -339,11 +350,16 @@ async def search_pills(
     status: str = Query(default="active"),
     limit: int = Query(default=20, ge=1, le=100),
     namespace: Optional[str] = _NAMESPACE_QUERY,
+    include_invalid: bool = Query(
+        default=False, description="Also return pills whose invalid_at has passed."
+    ),
 ):
     """Search knowledge pills by keyword, category, or tags."""
     col = await get_collection()
 
     filter_doc: dict = {"status": status, **prefix_filter(_request_namespace(request, namespace))}
+    if not include_invalid:
+        filter_doc.update(validity_filter())
     if q:
         filter_doc["$text"] = {"$search": q}
     if category:
@@ -351,7 +367,9 @@ async def search_pills(
     if tags:
         filter_doc["tags"] = {"$all": [t.strip() for t in tags.split(",")]}
 
-    cursor = col.find(filter_doc, {"embedding": 0}).sort("created_at", -1).limit(limit)
+    cursor = (
+        col.find(filter_doc, {"embedding": 0, "history": 0}).sort("created_at", -1).limit(limit)
+    )
     results = [_serialize_doc(doc) async for doc in cursor]
     return {"count": len(results), "pills": results}
 
@@ -396,6 +414,10 @@ async def semantic_search(
         "(default: OPENPILL_SEMANTIC_MIN_SIMILARITY, unset = no floor).",
     ),
     namespace: Optional[str] = _NAMESPACE_QUERY,
+    include_invalid: bool = Query(
+        default=False,
+        description="Also return invalidated pills (flagged is_invalid, ranked last).",
+    ),
 ):
     """Find pills by meaning using vector similarity + consistency metadata."""
     ns = _request_namespace(request, namespace)
@@ -414,6 +436,7 @@ async def semantic_search(
         hybrid=hybrid,
         min_similarity=min_similarity,
         namespace=ns,
+        include_invalid=include_invalid,
     )
 
 
@@ -431,7 +454,7 @@ async def get_pill_neighbors(
     if center is None:
         raise HTTPException(status_code=404, detail="Pill not found")
     for row in outgoing:
-        for key in ("created_at", "updated_at", "expires_at"):
+        for key in DATE_FIELDS:
             if isinstance(row.get(key), datetime):
                 row[key] = row[key].isoformat()
         is_superseded = await _is_superseded_in_db(col, row.get("_id", ""))
@@ -443,7 +466,7 @@ async def get_pill_neighbors(
             is_superseded=is_superseded,
         )
     for row in incoming:
-        for key in ("created_at", "updated_at", "expires_at"):
+        for key in DATE_FIELDS:
             if isinstance(row.get(key), datetime):
                 row[key] = row[key].isoformat()
         is_superseded = await _is_superseded_in_db(col, row.get("_id", ""))
@@ -479,10 +502,11 @@ async def get_pill(pill_id: str, request: Request, namespace: Optional[str] = _N
     attach_consistency_metadata(
         out,
         confidence=float(doc.get("confidence", 1.0)),
-        freshness=freshness_score(doc.get("updated_at")),
+        freshness=freshness_score(fact_time(doc)),
         conflict_count=count_conflict_relations(doc),
         is_superseded=is_superseded,
     )
+    out["is_invalid"] = is_invalid(doc)
     return out
 
 
@@ -496,6 +520,11 @@ class UpdatePillRequest(BaseModel):
     embed_text: Optional[str] = Field(
         default=None,
         description="Text to embed instead of title + content; '' clears the override",
+    )
+    valid_at: Optional[datetime] = Field(default=None, description="When the fact became true")
+    invalid_at: Optional[datetime] = Field(
+        default=None,
+        description="When the fact stopped being true; send null explicitly to revalidate",
     )
 
 
@@ -534,6 +563,10 @@ async def update_pill(
         update_fields["relations"] = [r.model_dump(mode="json") for r in req.relations]
     if req.embed_text is not None:
         update_fields["embed_text"] = req.embed_text or None
+    # Explicit null clears a date, so check what was sent rather than the value.
+    for key in ("valid_at", "invalid_at"):
+        if key in req.model_fields_set:
+            update_fields[key] = getattr(req, key)
 
     if not update_fields:
         return _serialize_doc(doc)
@@ -551,7 +584,10 @@ async def update_pill(
 
     update_fields["updated_at"] = datetime.now(timezone.utc)
 
-    await col.update_one({"_id": oid}, {"$set": update_fields})
+    update: dict = {"$set": update_fields}
+    if rewrites_text(doc, update_fields):
+        update.update(history_push(doc, reason="patch"))
+    await col.update_one({"_id": oid}, update)
 
     updated = await col.find_one({"_id": oid})
     if updated is None:
@@ -574,6 +610,7 @@ async def create_pill(req: CreatePillRequest, request: Request):
         confidence=req.confidence,
         namespace=list(ns or []),
         embed_text=req.embed_text or None,
+        valid_at=req.valid_at,
     )
 
     try:

@@ -139,10 +139,12 @@ Compared against the LangChain/LangGraph memory pages (Memory overview, Short-te
 - [x] `embed_text` override so callers embed a readable summary instead of a JSON blob
 - [ ] Job tracker: send `namespace` + `embed_text`, use a bound key, then re-check the 0.57 floor on its records
 
-*Phase 4 — temporal validity + update decisions (Graphiti, Mem0)*
-- [ ] `valid_at` / `invalid_at`; contradictions invalidate the old fact instead of merging it away
-- [ ] Turn extractor `supersedes` hints into real edges + invalidation
-- [ ] ADD / UPDATE / INVALIDATE / NOOP decision per extracted fact (opt-in), with a `history` array on updates
+*Phase 4 — temporal validity + update decisions (Graphiti, Mem0) (done)*
+- [x] `valid_at` / `invalid_at`; invalidated pills are history, hidden unless `include_invalid`
+- [x] `history` (last 20 versions) on every title/content rewrite
+- [x] Extractor `supersedes` hints → invalidation + directed edge (opt-in `OPENPILL_APPLY_SUPERSEDES_HINTS`)
+- [x] ADD / UPDATE / INVALIDATE / NOOP decision per extracted fact (opt-in `OPENPILL_UPDATE_POLICY=llm`)
+- [ ] Eval the decision step on labeled ingest sequences before making it the default
 
 *Phase 5 — optional*
 - [ ] `$vectorSearch` backend (Atlas or Community 8.2+ with `mongot`) behind a flag, once brute force gets slow
@@ -235,3 +237,4 @@ That gives you **explainable “why these two memories are connected”** and a 
 | 2026-10-08 | Phase 2 done: shared retrieval pipeline, similarity floor, memory-quality eval |
 | 2026-10-08 | Relevance-led ranking; live eval calibrated floor 0.57 for nomic-embed-text |
 | 2026-10-08 | Phase 3 done: namespaces, namespace-bound API keys, embed_text |
+| 2026-10-08 | Phase 4 done: temporal validity, history, LLM update decisions (opt-in) |

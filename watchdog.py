@@ -33,7 +33,9 @@ from datetime import datetime
 
 from db import close, get_collection
 from embeddings import cosine_similarity
+from models import DATE_FIELDS
 from namespaces import exact_filter
+from temporal import validity_filter
 from janitor import (
     analyze_batch,
     apply_consolidation,
@@ -51,7 +53,7 @@ def _format_pill(doc: dict) -> dict:
     """Prepare a MongoDB doc for LLM analysis (strip embedding, stringify _id)."""
     out = {k: v for k, v in doc.items() if k != "embedding"}
     out["_id"] = str(out["_id"])
-    for key in ("created_at", "updated_at", "expires_at"):
+    for key in DATE_FIELDS:
         if isinstance(out.get(key), datetime):
             out[key] = out[key].isoformat()
     return out
@@ -76,6 +78,7 @@ async def find_neighbors(
             "_id": {"$ne": new_id},
             "embedding": {"$exists": True, "$ne": None},
             **exact_filter(pill_doc.get("namespace")),
+            **validity_filter(),
         }
     ):
         score = cosine_similarity(new_embedding, doc["embedding"])

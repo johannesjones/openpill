@@ -50,6 +50,11 @@ class PillRelation(BaseModel):
     kind: PillRelationKind = Field(default=PillRelationKind.RELATED)
 
 
+# Datetime fields on a pill document (serialized to ISO strings in API/MCP output).
+DATE_FIELDS: tuple[str, ...] = ("created_at", "updated_at", "expires_at", "valid_at", "invalid_at")
+HISTORY_LIMIT = 20
+
+
 class PillStatus(str, Enum):
     ACTIVE = "active"
     ARCHIVED = "archived"
@@ -145,14 +150,27 @@ class KnowledgePill(BaseModel):
         default=None,
         description="Text to embed instead of title + content (e.g. a readable summary of JSON content)",
     )
+    valid_at: Optional[datetime] = Field(
+        default=None,
+        description="When the fact became true (default: created_at)",
+    )
+    invalid_at: Optional[datetime] = Field(
+        default=None,
+        description="When the fact stopped being true; set = historical, hidden from default reads",
+    )
+    history: list[dict] = Field(
+        default_factory=list,
+        description=f"Previous title/content versions (newest last, at most {HISTORY_LIMIT})",
+    )
 
     def to_mongo(self) -> dict:
         """Serialize to a MongoDB-ready dict."""
         doc = self.model_dump(mode="json")
         doc["created_at"] = self.created_at
         doc["updated_at"] = self.updated_at
-        if self.expires_at:
-            doc["expires_at"] = self.expires_at
+        for key in ("expires_at", "valid_at", "invalid_at"):
+            if getattr(self, key):
+                doc[key] = getattr(self, key)
         return doc
 
     @classmethod
