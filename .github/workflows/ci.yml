@@ -51,7 +51,7 @@ jobs:
           python-version: "3.11"
           cache: pip
       - name: Install integration test dependencies
-        run: pip install pytest pytest-asyncio pymongo motor
+        run: pip install pytest pytest-asyncio pymongo motor pydantic
       - name: Mongo integration tests
         run: |
           sleep 2
