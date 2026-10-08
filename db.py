@@ -8,6 +8,7 @@ connection. Supports legacy names for backward compatibility.
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 from typing import Optional
 
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorCollection
@@ -73,8 +74,22 @@ async def _ensure_indexes(col: AsyncIOMotorCollection) -> None:
         [("category", ASCENDING), ("status", ASCENDING)], name="category_status"
     )
     await col.create_index("tags", name="tags_idx")
-    await col.create_index("expires_at", expireAfterSeconds=0, name="ttl_expires")
+    # Expiry archives (see archive_expired); a Mongo TTL index would hard-delete.
+    existing = await col.index_information()
+    if "expireAfterSeconds" in existing.get("ttl_expires", {}):
+        await col.drop_index("ttl_expires")
+    await col.create_index("expires_at", name="ttl_expires")
     await col.create_index([("relations.target_id", ASCENDING)], name="relations_target_idx")
+
+
+async def archive_expired(col: AsyncIOMotorCollection) -> int:
+    """Soft-delete active pills whose ``expires_at`` has passed. Returns the count."""
+    now = datetime.now(timezone.utc)
+    result = await col.update_many(
+        {"status": "active", "expires_at": {"$lte": now}},
+        {"$set": {"status": "archived", "updated_at": now}},
+    )
+    return result.modified_count
 
 
 async def close() -> None:

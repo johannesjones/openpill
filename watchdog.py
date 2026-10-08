@@ -37,6 +37,7 @@ from janitor import (
     analyze_batch,
     apply_consolidation,
     consolidate_pills,
+    excluded_categories,
 )
 
 DEFAULT_THRESHOLD = float(os.getenv("WATCHDOG_SIMILARITY_THRESHOLD", "0.85"))
@@ -91,6 +92,8 @@ async def handle_new_pill(
     category = pill_doc.get("category", "<none>")
 
     if pill_doc.get("source", {}).get("reference", "").startswith("janitor:merged:"):
+        return
+    if category in excluded_categories():
         return
 
     print(f"\n  [WATCHDOG] New pill: {title!r} ({category})")

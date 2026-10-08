@@ -93,6 +93,58 @@ The [2510.20345](https://arxiv.org/abs/2510.20345) survey frames **KG constructi
 
 ---
 
+## LangGraph memory docs ↔ OpenPill (what matches, what is missing)
+
+Compared against the LangChain/LangGraph memory pages (Memory overview, Short-term memory, Memory how-to, Context overview). LangGraph splits memory into **short-term** (thread-scoped graph state, persisted by a **checkpointer**) and **long-term** (a **store** of JSON documents under **namespaces**, searchable by vector similarity). OpenPill is **long-term memory only**, run as its own service in place of the in-process `BaseStore`.
+
+| LangGraph concept | OpenPill today | Gap / note |
+|-------------------|----------------|------------|
+| Checkpointer, `thread_id` (short-term) | Out of scope | The tracker agent compiles its graph **without a checkpointer**, so it has no thread memory either |
+| Store: namespace + key + JSON value | One flat collection; ObjectId as key; `category` is the only grouping | **No namespaces / no `user_id`** → single-tenant. REST has one optional shared key (`OPENPILL_API_KEY`); MCP has no auth |
+| `store.search(ns, query=, filter=)` | `/pills/semantic` (category filter), `/pills/search` (text, category, tags) | Similarity is **brute-force cosine in Python**; `models.py` mentions Atlas `vectorSearch`, but `db.py` creates no vector index |
+| Embedding config on the store (`index`) | `embed_text_for_pill`; LiteLLM model via `EMBEDDING_MODEL` | Callers that store whole JSON records (the tracker) get a narrow similarity band; embed selected text fields instead |
+| Ranking = vector similarity | `0.6·confidence + 0.25·freshness + 0.15·similarity`, lexical fusion when < 3 vector hits, 1–2-hop neighbor expansion | **Ahead of the docs.** (Freshness was stuck at 0.5 on semantic search and single reads — fixed) |
+| Semantic memory: profile vs collection | **Collection** of atomic pills | The tracker uses OpenPill **profile-style** (one record per company); code merges it, which avoids the docs' warning about LLM-regenerated profiles |
+| Episodic memory (few-shot from past runs) | Conversation summaries via `ingest-conversation` | No few-shot example selection |
+| Procedural memory (reflection rewrites prompts) | `sync_memory.py` exports pills to `MEMORY.md` / editor rules | No self-updating instructions |
+| Writes on the hot path (save-memory tool) | MCP `create_pill` / `update_pill`, REST | Matches |
+| Writes in the background (scheduled, cron, manual) | `janitor.py --daemon` (scheduled), `watchdog.py` (change-stream, event-driven), `extractor.py` (manual), `proxy.py` auto-extract | **Ahead of the docs** (the event-driven path has no counterpart there) |
+| Over-insert / over-update, contradictions; "evaluate with LangSmith / Trustcall" | Dedup thresholds (0.92 / 0.95), same-source merge, janitor + watchdog consolidation, `conflicts_with` / `supersedes`, audit log, `undo_consolidation` | **No eval of merge quality.** Janitor/watchdog do not exclude caller-owned categories (e.g. `job_application`), so an LLM merge can rewrite records a caller treats as code-owned |
+| Forgetting (trim / delete / summarize messages) | Freshness in score, soft delete (`archived`), `expires_at` | ~~`expires_at` hard-deleted via a TTL index~~ — fixed: the janitor archives expired pills |
+| Context engineering: runtime context, state, store | Proxy injects relevant pills into the system prompt for any OpenAI-compatible client | Matches the docs' "search store, then prompt" node pattern, outside LangGraph |
+
+**Where OpenPill goes further:** combined ranking, typed relations and neighbor expansion, provenance (`source`, `extraction_meta`), event-driven plus scheduled maintenance, and one shared service over REST, MCP and a proxy instead of a store bound to one graph.
+
+**Improvement plan** (also drawing on Mem0, Zep/Graphiti, LangMem, Letta, A-MEM, LoCoMo/LongMemEval):
+
+*Phase 1 — correctness (done)*
+- [x] Freshness score: `_serialize_doc` turned `updated_at` into a string before scoring, so semantic search and `GET /pills/{id}` always got 0.5
+- [x] `expand_neighbors=true` no longer rescores direct hits (it wiped the superseded penalty and the hybrid blend)
+- [x] Timezone-aware `updated_at` on PATCH / MCP update
+- [x] `expires_at` archives instead of hard-deleting (janitor run; TTL index replaced)
+- [x] Janitor/watchdog skip `OPENPILL_MAINTENANCE_EXCLUDE_CATEGORIES`; merged pills get an embedding
+
+*Phase 2 — one search path + memory-quality evals*
+- [ ] Shared `retrieval.py` for `api.py` and `server.py` (today copy-pasted, with different sort keys and empty-result handling)
+- [ ] ~40-case eval set by question type (single-hop, multi-hop, temporal, knowledge-update, abstention); recall@k, MRR, abstention accuracy
+- [ ] Optional similarity floor (`OPENPILL_SEMANTIC_MIN_SIMILARITY`) so "nothing relevant" can come back empty
+
+*Phase 3 — namespaces (LangGraph store model)*
+- [ ] Optional `namespace` on pills, filtered on every read/write; janitor/watchdog never merge across namespaces; per-key namespace prefixes
+- [ ] `embed_text` override so callers embed a readable summary instead of a JSON blob
+
+*Phase 4 — temporal validity + update decisions (Graphiti, Mem0)*
+- [ ] `valid_at` / `invalid_at`; contradictions invalidate the old fact instead of merging it away
+- [ ] Turn extractor `supersedes` hints into real edges + invalidation
+- [ ] ADD / UPDATE / INVALIDATE / NOOP decision per extracted fact (opt-in), with a `history` array on updates
+
+*Phase 5 — optional*
+- [ ] `$vectorSearch` backend (Atlas or Community 8.2+ with `mongot`) behind a flag, once brute force gets slow
+- [ ] Per-namespace "core profile" pill maintained in the background (Letta memory blocks / LangGraph profile)
+- [ ] Opt-in memory evolution of linked neighbors (A-MEM), audited
+
+---
+
 ## Roadmap (suggested phases)
 
 ### Phase A — Solidify the current model (near-term)
@@ -172,3 +224,5 @@ That gives you **explainable “why these two memories are connected”** and a 
 | 2026-02-26 | Initial research synthesis + phased roadmap |
 | 2026-02-26 | Added “How to proceed with the app you have” |
 | 2026-04-02 | Added arXiv:2510.20345 (LLM-KG survey) mapping + Phase B2 (minimal schema & fusion) |
+| 2026-10-06 | Added LangGraph memory docs ↔ OpenPill comparison + follow-ups |
+| 2026-10-08 | Phase 1 correctness fixes done; follow-ups replaced by a phased improvement plan |

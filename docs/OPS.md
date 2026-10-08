@@ -98,6 +98,15 @@ Unknown values in legacy data are **normalized to `related`** when relations are
 - **`conflicts_with`** — The janitor (`janitor.py`) can persist contradiction pairs as bidirectional edges before optional consolidation. To **list** unresolved active↔active conflict pairs: **`GET /pills/conflicts`** (`limit` 1–500, default 100). Response: `total`, `pairs` (`pill_id_a` / `pill_id_b`, `title_a` / `title_b`), `truncated`. MCP equivalent: **`list_unresolved_conflicts`**.
 - **`supersedes`** — A newer active pill may point at an older one with `kind: supersedes`. Semantic search and single-pill reads attach **`is_superseded`** and **`consistency_warning`** on the target so clients can deprioritize stale facts.
 
+## Janitor and watchdog scope
+
+- **`OPENPILL_MAINTENANCE_EXCLUDE_CATEGORIES`** (comma-separated, default empty): categories the janitor and watchdog never analyze or merge. Use it for records a client owns and writes deterministically, e.g. `job_application` for the job-application tracker.
+- Merged pills are embedded when they are created. If embedding fails they are stored without a vector; run `backfill_embeddings.py`.
+
+## Expiry (`expires_at`)
+
+A pill with `expires_at` in the past is **archived** (`status=archived`), not deleted. The janitor does this at the start of every non-dry-run (`python janitor.py --apply`, or `--daemon`). Startup drops the old Mongo TTL index `ttl_expires` (which hard-deleted documents) and recreates it as a plain index.
+
 ## Same-source merge on ingest (dedup → update)
 
 When **`OPENPILL_MERGE_SAME_SOURCE`** is `true` (default), ingest runs compare near-duplicates to the pill’s **`source.reference`**:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
 from bson import ObjectId
@@ -159,3 +159,77 @@ def test_semantic_search_marks_superseded_pills(monkeypatch):
     pills = {p["_id"]: p for p in r.json()["pills"]}
     assert pills[str(oid_old)]["is_superseded"] is True
     assert "consistency_warning" in pills[str(oid_old)]
+
+
+def _memory_doc(oid, *, updated_at, relations=None, confidence=0.9):
+    return {
+        "_id": oid,
+        "title": f"Pill {oid}",
+        "content": "Body",
+        "category": "memory",
+        "status": "active",
+        "embedding": [0.2, 0.4],
+        "confidence": confidence,
+        "updated_at": updated_at,
+        "created_at": updated_at,
+        "relations": relations or [],
+    }
+
+
+def test_freshness_reflects_updated_at(monkeypatch):
+    now = datetime.now(timezone.utc)
+    fresh, stale = ObjectId(), ObjectId()
+    col = _FakeCol(
+        [
+            _memory_doc(fresh, updated_at=now),
+            _memory_doc(stale, updated_at=now - timedelta(days=60)),
+        ]
+    )
+
+    async def fake_col():
+        return col
+
+    monkeypatch.setattr(api_module, "get_collection", fake_col)
+    monkeypatch.setattr(api_module, "get_embedding", AsyncMock(return_value=[0.2, 0.4]))
+
+    client = TestClient(api_module.app)
+    pills = {p["_id"]: p for p in client.get("/pills/semantic", params={"q": "x"}).json()["pills"]}
+    assert pills[str(fresh)]["freshness_score"] > 0.99
+    assert pills[str(stale)]["freshness_score"] == 0.0
+    assert pills[str(fresh)]["retrieval_score"] > pills[str(stale)]["retrieval_score"]
+
+    # The semantic call serialized the shared docs in place; use a fresh one.
+    col._docs = [_memory_doc(fresh, updated_at=now)]
+    single = client.get(f"/pills/{fresh}").json()
+    assert single["freshness_score"] > 0.99
+
+
+def test_expand_neighbors_keeps_superseded_penalty(monkeypatch):
+    now = datetime.now(timezone.utc)
+    oid_old, oid_new = ObjectId(), ObjectId()
+    col = _FakeCol(
+        [
+            _memory_doc(oid_old, updated_at=now),
+            _memory_doc(
+                oid_new,
+                updated_at=now,
+                relations=[{"target_id": str(oid_old), "kind": "supersedes"}],
+            ),
+        ]
+    )
+
+    async def fake_col():
+        return col
+
+    async def no_expansion(_col, results, **_kwargs):
+        return results
+
+    monkeypatch.setattr(api_module, "get_collection", fake_col)
+    monkeypatch.setattr(api_module, "get_embedding", AsyncMock(return_value=[0.2, 0.4]))
+    monkeypatch.setattr(api_module, "expand_semantic_neighbors_hops", no_expansion)
+
+    client = TestClient(api_module.app)
+    r = client.get("/pills/semantic", params={"q": "x", "expand_neighbors": "true"})
+    pills = {p["_id"]: p for p in r.json()["pills"]}
+    assert pills[str(oid_old)]["is_superseded"] is True
+    assert pills[str(oid_old)]["retrieval_score"] < pills[str(oid_new)]["retrieval_score"]

@@ -25,6 +25,7 @@ async def test_apply_consolidation_calls_rewire_relations(monkeypatch):
 
     monkeypatch.setattr("janitor.rewire_relations_on_merge", capture_rewire)
     monkeypatch.setattr("janitor.write_audit_log", AsyncMock())
+    monkeypatch.setattr("janitor.get_embedding", AsyncMock(return_value=[0.1, 0.2]))
 
     consolidated = ConsolidatedPill(title="Merged", content="Body", tags=[], confidence=0.9)
     oid_a = str(ObjectId())
@@ -37,3 +38,5 @@ async def test_apply_consolidation_calls_rewire_relations(monkeypatch):
     assert captured["new_id"] == new_id
     col.insert_one.assert_awaited_once()
     col.update_many.assert_awaited_once()
+    inserted = col.insert_one.await_args.args[0]
+    assert inserted["embedding"] == [0.1, 0.2]

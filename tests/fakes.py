@@ -30,6 +30,9 @@ def _match(doc: dict, q: dict) -> bool:
                     return False
             elif v not in targets:
                 return False
+        elif isinstance(v, dict) and "$lte" in v:
+            if doc.get(k) is None or not doc[k] <= v["$lte"]:
+                return False
         elif doc.get(k) != v:
             return False
     return True
@@ -95,6 +98,8 @@ class FakeCollection:
 def _project(doc: dict, projection: dict | None) -> dict:
     if not projection:
         return doc.copy()
+    if all(v in (0, False) for v in projection.values()):
+        return {k: v for k, v in doc.items() if k not in projection}
     if projection.get("_id") == 0:
         return {k: v for k, v in doc.items() if k in projection or k == "_id"}
     out = {}

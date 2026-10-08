@@ -42,7 +42,8 @@ from datetime import datetime, timezone
 from bson import ObjectId
 from pydantic import BaseModel, Field
 
-from db import close, get_collection
+from db import archive_expired, close, get_collection
+from embeddings import embed_text_for_pill, get_embedding
 from models import KnowledgePill, PillRelationKind, PillSource, PillStatus, SourceType
 from pill_relations import add_bidirectional_relation, rewire_relations_on_merge
 
@@ -71,6 +72,15 @@ ALLOWED_MODEL_POLICIES = {"local_only", "local_first", "external_first"}
 if MODEL_POLICY not in ALLOWED_MODEL_POLICIES:
     MODEL_POLICY = "local_first"
 BATCH_SIZE = 40
+
+
+def excluded_categories() -> set[str]:
+    """Categories the janitor and watchdog must never merge (owned by a caller).
+
+    Read on each call so tests and long-running daemons pick up changes.
+    """
+    raw = os.getenv("OPENPILL_MAINTENANCE_EXCLUDE_CATEGORIES", "")
+    return {c.strip() for c in raw.split(",") if c.strip()}
 
 # ---------------------------------------------------------------------------
 # Pydantic models for structured LLM responses
@@ -255,10 +265,13 @@ async def consolidate_pills(
 
 
 async def fetch_pills_by_category(col) -> dict[str, list[dict]]:
-    """Load all active pills, grouped by category."""
+    """Load all active pills, grouped by category, minus excluded categories."""
     groups: dict[str, list[dict]] = defaultdict(list)
+    excluded = excluded_categories()
     cursor = col.find({"status": "active"}, {"embedding": 0})
     async for doc in cursor:
+        if doc.get("category") in excluded:
+            continue
         doc["_id"] = str(doc["_id"])
         groups[doc["category"]].append(doc)
     return groups
@@ -314,6 +327,11 @@ async def apply_consolidation(
         ),
         confidence=consolidated.confidence,
     )
+    try:
+        pill.embedding = await get_embedding(embed_text_for_pill(pill.title, pill.content))
+    except Exception as exc:
+        # Same fallback as create: store without a vector, backfill later.
+        print(f"  WARNING: embedding failed for merged pill, run backfill_embeddings.py: {exc}")
     result = await col.insert_one(pill.to_mongo())
     new_id = str(result.inserted_id)
 
@@ -339,6 +357,10 @@ async def run_janitor(
     max_ops: int | None = None,
 ) -> None:
     col = await get_collection()
+    if not dry_run:
+        archived = await archive_expired(col)
+        if archived:
+            print(f"Archived {archived} expired pill(s).")
     categories = await fetch_pills_by_category(col)
 
     total_pills = sum(len(v) for v in categories.values())

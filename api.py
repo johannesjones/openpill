@@ -143,8 +143,16 @@ def _count_conflict_relations(doc: dict) -> int:
     return sum(1 for r in rels if r.get("kind") == "conflicts_with")
 
 
-def _freshness_score(dt: datetime | None) -> float:
-    """Recency score in [0,1], linear decay over 30 days."""
+def _freshness_score(dt: datetime | str | None) -> float:
+    """Recency score in [0,1], linear decay over 30 days.
+
+    Accepts the ISO string left behind by ``_serialize_doc`` as well as a datetime.
+    """
+    if isinstance(dt, str):
+        try:
+            dt = datetime.fromisoformat(dt)
+        except ValueError:
+            return 0.5
     if not isinstance(dt, datetime):
         return 0.5
     now = datetime.now(timezone.utc)
@@ -417,11 +425,7 @@ async def semantic_search(
             _attach_consistency_metadata(
                 row,
                 confidence=float(row.get("confidence", 1.0)),
-                freshness=_freshness_score(
-                    datetime.fromisoformat(row["updated_at"])
-                )
-                if isinstance(row.get("updated_at"), str)
-                else 0.5,
+                freshness=_freshness_score(row.get("updated_at")),
                 conflict_count=_count_conflict_relations(row),
                 is_superseded=True,
                 similarity=float(row.get("similarity", 0.0)),
@@ -465,11 +469,7 @@ async def semantic_search(
                 _attach_consistency_metadata(
                     row,
                     confidence=float(row.get("confidence", 1.0)),
-                    freshness=_freshness_score(
-                        datetime.fromisoformat(row["updated_at"])
-                    )
-                    if isinstance(row.get("updated_at"), str)
-                    else 0.5,
+                    freshness=_freshness_score(row.get("updated_at")),
                     conflict_count=_count_conflict_relations(row),
                     similarity=0.0,
                 )
@@ -499,14 +499,15 @@ async def semantic_search(
             max_nodes=max_nodes,
         )
         for row in results:
-            row_conf = float(row.get("confidence", 1.0))
-            row_fresh = _freshness_score(datetime.fromisoformat(row["updated_at"])) if isinstance(row.get("updated_at"), str) else 0.5
-            row_conflicts = _count_conflict_relations(row)
+            # Direct hits already carry their score (incl. superseded penalty and
+            # hybrid blend); only score the neighbors the expansion added.
+            if "retrieval_score" in row:
+                continue
             _attach_consistency_metadata(
                 row,
-                confidence=row_conf,
-                freshness=row_fresh,
-                conflict_count=row_conflicts,
+                confidence=float(row.get("confidence", 1.0)),
+                freshness=_freshness_score(row.get("updated_at")),
+                conflict_count=_count_conflict_relations(row),
                 similarity=float(row.get("similarity", 0.0)),
             )
     results.sort(key=lambda d: d.get("retrieval_score", 0.0), reverse=True)
@@ -541,7 +542,7 @@ async def get_pill_neighbors(pill_id: str):
         _attach_consistency_metadata(
             row,
             confidence=float(row.get("confidence", 1.0)),
-            freshness=_freshness_score(datetime.fromisoformat(row["updated_at"])) if isinstance(row.get("updated_at"), str) else 0.5,
+            freshness=_freshness_score(row.get("updated_at")),
             conflict_count=_count_conflict_relations(row),
             is_superseded=is_superseded,
         )
@@ -553,7 +554,7 @@ async def get_pill_neighbors(pill_id: str):
         _attach_consistency_metadata(
             row,
             confidence=float(row.get("confidence", 1.0)),
-            freshness=_freshness_score(datetime.fromisoformat(row["updated_at"])) if isinstance(row.get("updated_at"), str) else 0.5,
+            freshness=_freshness_score(row.get("updated_at")),
             conflict_count=_count_conflict_relations(row),
             is_superseded=is_superseded,
         )
@@ -642,7 +643,7 @@ async def update_pill(pill_id: str, req: UpdatePillRequest):
                 exc,
             )
 
-    update_fields["updated_at"] = datetime.utcnow()
+    update_fields["updated_at"] = datetime.now(timezone.utc)
 
     await col.update_one({"_id": oid}, {"$set": update_fields})
 

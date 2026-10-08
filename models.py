@@ -110,7 +110,7 @@ class KnowledgePill(BaseModel):
       - text index on `title` + `content` (full-text search)
       - vectorSearch on `embedding` (Atlas vector search)
       - compound index on `category` + `status`
-      - TTL index on `expires_at`
+      - index on `expires_at` (expired pills are archived by the janitor, not deleted)
     """
 
     title: str = Field(..., min_length=1, max_length=200)
@@ -127,7 +127,7 @@ class KnowledgePill(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     expires_at: Optional[datetime] = Field(
-        default=None, description="Optional TTL – pill auto-archives after this date"
+        default=None, description="Optional expiry – the janitor archives the pill after this date"
     )
     relations: list[PillRelation] = Field(
         default_factory=list,

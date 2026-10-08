@@ -15,7 +15,7 @@ import argparse
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Union
 
 from dotenv import load_dotenv
@@ -309,7 +309,7 @@ async def update_pill(
                     pill_id,
                     exc,
                 )
-        update_fields["updated_at"] = datetime.utcnow()
+        update_fields["updated_at"] = datetime.now(timezone.utc)
         await col.update_one({"_id": oid}, {"$set": update_fields})
         doc = await col.find_one({"_id": oid}, {"embedding": 0})
         if doc is None:
