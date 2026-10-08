@@ -48,5 +48,6 @@ def test_openapi_stable_hash_snapshot():
         "7624e9eb621b86f87b2978394905852809f8f0e3626434c0afe8cfc3a660b7d1",  # py3.11 (ingest merged_same_source)
         "8fb10c060d85958bbd7aae9cf6e388ba0ccd164d0fc774f0102a36e5612121ed",  # py3.11 (GET /pills/conflicts)
         "5b2b1827c0c40b1573ac45cba8f844c15b23270e6daaca46ef54b84aa03d7d80",  # py3.11 (semantic min_similarity)
+        "0c0523e5e39bad76621254054257ed24d39c4b454d35cce0032975e4b9c66844",  # py3.11 (namespaces, embed_text)
         "1bd468f16424fd987543bd7e5882680125f8fa2f82c7e92dbcb167e0e6cee51b",  # py3.13
     }

@@ -61,6 +61,7 @@ def test_topics_snapshot_forwards_query_params(monkeypatch):
         "per_category": 5,
         "min_doc_freq": 3,
         "min_token_len": 4,
+        "namespace": None,
     }
 
 

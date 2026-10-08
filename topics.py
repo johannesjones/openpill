@@ -11,6 +11,7 @@ import re
 from collections import Counter, defaultdict
 
 from db import get_collection
+from namespaces import prefix_filter
 
 TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]{2,}")
 
@@ -75,10 +76,12 @@ async def build_topic_snapshot(
     per_category: int = 10,
     min_doc_freq: int = 2,
     min_token_len: int = 3,
+    namespace: list[str] | None = None,
 ) -> dict:
     col = await get_collection()
     docs = []
-    async for d in col.find({"status": "active"}, {"title": 1, "content": 1, "category": 1}):
+    query = {"status": "active", **prefix_filter(namespace)}
+    async for d in col.find(query, {"title": 1, "content": 1, "category": 1}):
         docs.append(d)
 
     corpus_df: Counter[str] = Counter()

@@ -14,6 +14,7 @@ import os
 from datetime import datetime, timezone
 
 from embeddings import cosine_similarity
+from namespaces import prefix_filter
 from pill_relations import expand_semantic_neighbors_hops, serialize_pill_doc
 
 HYBRID_RETRIEVAL_ENABLED = os.getenv("HYBRID_RETRIEVAL_ENABLED", "false").lower() in (
@@ -178,12 +179,20 @@ async def semantic_retrieve(
     max_nodes: int = 30,
     hybrid: bool = False,
     min_similarity: float | None = None,
+    namespace: list[str] | None = None,
 ) -> dict:
-    """Run semantic retrieval and return ``{count, pills, retrieval_metrics}``."""
+    """Run semantic retrieval and return ``{count, pills, retrieval_metrics}``.
+
+    ``namespace`` restricts hits, keyword matches and graph neighbors to that prefix.
+    """
     if min_similarity is None:
         min_similarity = default_min_similarity()
 
-    filter_doc: dict = {"status": "active", "embedding": {"$exists": True, "$ne": None}}
+    filter_doc: dict = {
+        "status": "active",
+        "embedding": {"$exists": True, "$ne": None},
+        **prefix_filter(namespace),
+    }
     if category:
         filter_doc["category"] = category
 
@@ -221,7 +230,11 @@ async def semantic_retrieve(
         len(candidates) < HYBRID_LEXICAL_FALLBACK_MIN_VECTOR
     )
     if lexical_fallback_used:
-        lexical_filter: dict = {"status": "active", "$text": {"$search": query}}
+        lexical_filter: dict = {
+            "status": "active",
+            "$text": {"$search": query},
+            **prefix_filter(namespace),
+        }
         if category:
             lexical_filter["category"] = category
         cursor = (
@@ -266,6 +279,7 @@ async def semantic_retrieve(
             neighbor_limit=neighbor_limit,
             max_hops=max_hops,
             max_nodes=max_nodes,
+            namespace=namespace,
         )
         for row in results:
             # Direct hits already carry their score; only score added neighbors.

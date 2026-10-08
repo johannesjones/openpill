@@ -5,6 +5,25 @@ from __future__ import annotations
 from bson import ObjectId
 
 
+_MISSING = object()
+
+
+def _get_path(doc: dict, path: str):
+    """Resolve ``a.b`` / ``namespace.0`` paths; ``_MISSING`` when absent."""
+    cur = doc
+    for part in path.split("."):
+        if isinstance(cur, list) and part.isdigit():
+            idx = int(part)
+            if idx >= len(cur):
+                return _MISSING
+            cur = cur[idx]
+        elif isinstance(cur, dict) and part in cur:
+            cur = cur[part]
+        else:
+            return _MISSING
+    return cur
+
+
 def _match(doc: dict, q: dict) -> bool:
     if not q:
         return True
@@ -33,15 +52,20 @@ def _match(doc: dict, q: dict) -> bool:
             elif v not in targets:
                 return False
         elif isinstance(v, dict) and any(op.startswith("$") for op in v):
-            val = doc.get(k)
-            if "$exists" in v and (k in doc) != bool(v["$exists"]):
+            found = _get_path(doc, k)
+            val = None if found is _MISSING else found
+            if "$exists" in v and (found is not _MISSING) != bool(v["$exists"]):
                 return False
             if "$ne" in v and val == v["$ne"]:
                 return False
             if "$lte" in v and (val is None or not val <= v["$lte"]):
                 return False
-        elif doc.get(k) != v:
-            return False
+            if "$in" in v and val not in v["$in"]:
+                return False
+        else:
+            found = _get_path(doc, k)
+            if (None if found is _MISSING else found) != v:
+                return False
     return True
 
 
@@ -127,6 +151,7 @@ def _project(doc: dict, projection: dict | None) -> dict:
 class MagicResult:
     def __init__(self, n: int):
         self.modified_count = n
+        self.matched_count = n
 
 
 class MagicInsert:

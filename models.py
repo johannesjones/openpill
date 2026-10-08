@@ -137,6 +137,14 @@ class KnowledgePill(BaseModel):
         default=None,
         description="Optional structured extraction metadata (strict schema mode)",
     )
+    namespace: list[str] = Field(
+        default_factory=list,
+        description="Namespace path, e.g. ['jjones', 'job_tracker']; empty = global",
+    )
+    embed_text: Optional[str] = Field(
+        default=None,
+        description="Text to embed instead of title + content (e.g. a readable summary of JSON content)",
+    )
 
     def to_mongo(self) -> dict:
         """Serialize to a MongoDB-ready dict."""

@@ -73,3 +73,11 @@ def embed_text_for_pill(title: str, content: str) -> str:
     """Build the text representation used for embedding a pill."""
     return f"{title}\n{content}"
 
+
+
+def embedding_text_for_doc(doc: dict) -> str:
+    """Text to embed for a stored pill: its ``embed_text`` override, else title + content."""
+    override = doc.get("embed_text")
+    if override:
+        return override
+    return embed_text_for_pill(doc.get("title", ""), doc.get("content", ""))

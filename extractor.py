@@ -58,6 +58,7 @@ from models import (
     SourceType,
     normalize_relation_kind,
 )
+from namespaces import exact_filter
 from pill_relations import add_bidirectional_relation, find_related_candidates
 
 MODEL = os.getenv("EXTRACTOR_MODEL", "gpt-4o-mini")
@@ -572,14 +573,21 @@ async def summarize_transcript(transcript: str, *, model: str | None = None) -> 
 
 
 async def find_near_duplicates(
-    embedding: list[float], col, threshold: float | None = None
+    embedding: list[float],
+    col,
+    threshold: float | None = None,
+    namespace: list[str] | None = None,
 ) -> list[dict]:
-    """Return existing pills whose embedding is above the similarity threshold."""
+    """Return pills in the same namespace whose embedding is above the threshold."""
     if threshold is None:
         threshold = _get_duplicate_threshold(for_conversation=False)
     duplicates = []
     async for doc in col.find(
-        {"status": "active", "embedding": {"$exists": True, "$ne": None}},
+        {
+            "status": "active",
+            "embedding": {"$exists": True, "$ne": None},
+            **exact_filter(namespace),
+        },
         {"title": 1, "embedding": 1},
     ):
         score = cosine_similarity(embedding, doc["embedding"])
@@ -623,6 +631,7 @@ async def run_extraction(
     dry_run: bool = True,
     min_confidence: float = 0.5,
     max_pills: int = MAX_PILLS_PER_RUN,
+    namespace: list[str] | None = None,
 ) -> dict:
     """Extract pills from text, deduplicate, and optionally insert into MongoDB."""
     col = await get_collection()
@@ -659,7 +668,7 @@ async def run_extraction(
             continue
 
         embedding = await get_embedding(embed_text_for_pill(fact.title, fact.content))
-        dupes = await find_near_duplicates(embedding, col)
+        dupes = await find_near_duplicates(embedding, col, namespace=namespace)
 
         if dupes:
             merge_hit = None
@@ -732,6 +741,7 @@ async def run_extraction(
                 confidence=fact.confidence,
                 embedding=embedding,
                 extraction_meta=prov,
+                namespace=list(namespace or []),
             )
             result = await col.insert_one(pill.to_mongo())
             new_id = result.inserted_id
@@ -749,6 +759,7 @@ async def run_extraction(
                         high=dup_threshold,
                         exclude_id=new_id,
                         max_links=_get_related_max_links(),
+                        namespace=namespace,
                     )
                     for c in candidates:
                         await add_bidirectional_relation(
@@ -789,6 +800,7 @@ async def run_conversation_extraction(
     dry_run: bool = True,
     min_confidence: float = 0.5,
     max_pills: int = MAX_PILLS_PER_RUN,
+    namespace: list[str] | None = None,
 ) -> dict:
     """Summarize a conversation and extract pills, deduplicate, and optionally insert."""
     col = await get_collection()
@@ -860,7 +872,9 @@ async def run_conversation_extraction(
             continue
 
         embedding = await get_embedding(embed_text_for_pill(fact.title, fact.content))
-        dupes = await find_near_duplicates(embedding, col, threshold=conv_threshold)
+        dupes = await find_near_duplicates(
+            embedding, col, threshold=conv_threshold, namespace=namespace
+        )
 
         if dupes:
             merge_hit = None
@@ -933,6 +947,7 @@ async def run_conversation_extraction(
                 confidence=fact.confidence,
                 embedding=embedding,
                 extraction_meta=prov,
+                namespace=list(namespace or []),
             )
             result = await col.insert_one(pill.to_mongo())
             new_id = result.inserted_id
@@ -950,6 +965,7 @@ async def run_conversation_extraction(
                         high=dup_threshold,
                         exclude_id=new_id,
                         max_links=_get_related_max_links(),
+                        namespace=namespace,
                     )
                     for c in candidates:
                         await add_bidirectional_relation(

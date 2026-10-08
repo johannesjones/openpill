@@ -27,12 +27,30 @@ from bson.errors import InvalidId  # noqa: E402
 from mcp.server.fastmcp import FastMCP  # noqa: E402
 
 from db import get_collection  # noqa: E402
-from embeddings import embed_text_for_pill, get_embedding
+from embeddings import embedding_text_for_doc, get_embedding
 from models import KnowledgePill, PillSource, PillStatus, SourceType
+from namespaces import (
+    NamespaceError,
+    format_namespace,
+    is_within,
+    mcp_namespace,
+    parse_namespace,
+    prefix_filter,
+    resolve as resolve_namespace,
+)
 from pill_relations import list_active_conflict_pairs, neighbors_for_pill
 from retrieval import semantic_retrieve
 
 logger = logging.getLogger("openpill.mcp")
+def _namespace(requested: Optional[str]) -> list[str] | None:
+    """Request namespace narrowed to OPENPILL_MCP_NAMESPACE; raises NamespaceError."""
+    return resolve_namespace(parse_namespace(requested), mcp_namespace())
+
+
+def _namespace_error(exc: NamespaceError) -> str:
+    return json.dumps({"error": str(exc)})
+
+
 mcp = FastMCP(
     "OpenPill",
     instructions=(
@@ -54,6 +72,7 @@ async def search_pills(
     tags: Optional[list[str]] = None,
     status: str = "active",
     limit: int = 20,
+    namespace: Optional[str] = None,
 ) -> str:
     """Search knowledge pills by full-text query, category, or tags.
 
@@ -63,14 +82,19 @@ async def search_pills(
         tags:     Filter by one or more tags (AND logic).
         status:   Filter by status – "active" (default), "archived", or "deprecated".
         limit:    Max results to return (default 20, max 100).
+        namespace: Namespace prefix (default: all, or OPENPILL_MCP_NAMESPACE).
 
     Returns:
         JSON array of matching knowledge pills.
     """
+    try:
+        ns = _namespace(namespace)
+    except NamespaceError as exc:
+        return _namespace_error(exc)
     col = await get_collection()
     limit = min(limit, 100)
 
-    filter_doc: dict = {"status": status}
+    filter_doc: dict = {"status": status, **prefix_filter(ns)}
 
     if query:
         filter_doc["$text"] = {"$search": query}
@@ -104,15 +128,20 @@ async def search_pills(
 
 
 @mcp.tool()
-async def get_pill(pill_id: str) -> str:
+async def get_pill(pill_id: str, namespace: Optional[str] = None) -> str:
     """Retrieve a single knowledge pill by its MongoDB ObjectId.
 
     Args:
-        pill_id: The 24-character hex ObjectId string.
+        pill_id:   The 24-character hex ObjectId string.
+        namespace: Only return the pill if it lies under this prefix.
 
     Returns:
         JSON object of the pill, or an error message.
     """
+    try:
+        ns = _namespace(namespace)
+    except NamespaceError as exc:
+        return _namespace_error(exc)
     col = await get_collection()
 
     try:
@@ -121,7 +150,7 @@ async def get_pill(pill_id: str) -> str:
         return json.dumps({"error": f"Invalid ObjectId: {pill_id}"})
 
     doc = await col.find_one({"_id": oid}, {"embedding": 0})
-    if doc is None:
+    if doc is None or not is_within(doc.get("namespace"), ns):
         return json.dumps({"error": "Pill not found."})
 
     doc["_id"] = str(doc["_id"])
@@ -133,23 +162,28 @@ async def get_pill(pill_id: str) -> str:
 
 
 @mcp.tool()
-async def get_pill_neighbors(pill_id: str) -> str:
+async def get_pill_neighbors(pill_id: str, namespace: Optional[str] = None) -> str:
     """Explore the knowledge graph around one pill (1-hop).
 
     **When to call:** After `semantic_search` or `get_pill` when you need related
     context (dependencies, “see also”, contradictions) without another vector query.
 
     Args:
-        pill_id: 24-char hex ObjectId of the anchor pill.
+        pill_id:   24-char hex ObjectId of the anchor pill.
+        namespace: Restrict the anchor and its neighbors to this prefix.
 
     Returns:
         JSON object: `pill_id`, `outgoing` (list of related target pills this pill
         points to), `incoming` (list of pills that reference this one). Each pill
         dict omits embeddings; dates are ISO strings. Errors return `{"error": "..."}`.
     """
+    try:
+        ns = _namespace(namespace)
+    except NamespaceError as exc:
+        return _namespace_error(exc)
     col = await get_collection()
     try:
-        center, outgoing, incoming = await neighbors_for_pill(col, pill_id)
+        center, outgoing, incoming = await neighbors_for_pill(col, pill_id, namespace=ns)
     except ValueError as e:
         return json.dumps({"error": str(e)})
     if center is None:
@@ -178,6 +212,8 @@ async def create_pill(
     source_type: str = "manual",
     source_reference: str = "",
     confidence: float = 1.0,
+    namespace: Optional[str] = None,
+    embed_text: Optional[str] = None,
 ) -> str:
     """Store a new knowledge pill in the database.
 
@@ -189,10 +225,18 @@ async def create_pill(
         source_type:      Origin type – "chat", "document", "manual", or "code".
         source_reference: Chat ID, file path, or URL that sourced this pill.
         confidence:       Confidence score 0.0-1.0 (default 1.0).
+        namespace:        Namespace to store the pill in (default: global, or
+                          OPENPILL_MCP_NAMESPACE).
+        embed_text:       Text to embed instead of title + content (e.g. a
+                          readable summary when content is JSON).
 
     Returns:
         JSON with the new pill's ID and a confirmation.
     """
+    try:
+        ns = _namespace(namespace)
+    except NamespaceError as exc:
+        return _namespace_error(exc)
     col = await get_collection()
 
     pill = KnowledgePill(
@@ -202,10 +246,12 @@ async def create_pill(
         tags=tags or [],
         source=PillSource(type=SourceType(source_type), reference=source_reference),
         confidence=confidence,
+        namespace=list(ns or []),
+        embed_text=embed_text or None,
     )
 
     try:
-        pill.embedding = await get_embedding(embed_text_for_pill(title, content))
+        pill.embedding = await get_embedding(embedding_text_for_doc(pill.model_dump()))
     except Exception as exc:
         # The pill is still stored, but it stays invisible to semantic_search
         # until an embedding is backfilled.
@@ -218,6 +264,7 @@ async def create_pill(
             "message": "Pill created.",
             "id": str(result.inserted_id),
             "title": title,
+            "namespace": format_namespace(ns),
         },
         ensure_ascii=False,
     )
@@ -236,6 +283,8 @@ async def update_pill(
     category: Optional[str] = None,
     tags: Optional[list[str]] = None,
     status: Optional[str] = None,
+    embed_text: Optional[str] = None,
+    namespace: Optional[str] = None,
 ) -> str:
     """Update selected fields of an existing pill.
 
@@ -251,10 +300,16 @@ async def update_pill(
         category: Replacement category.
         tags:     Replacement tag list (not merged).
         status:   Replacement status, e.g. "active", "archived".
+        embed_text: Text to embed instead of title + content; "" clears it.
+        namespace:  Only update the pill if it lies under this prefix.
 
     Returns:
         JSON of the updated pill (embedding omitted). Errors: ``{"error": "..."}``.
     """
+    try:
+        ns = _namespace(namespace)
+    except NamespaceError as exc:
+        return _namespace_error(exc)
     col = await get_collection()
     try:
         oid = ObjectId(pill_id)
@@ -262,7 +317,7 @@ async def update_pill(
         return json.dumps({"error": f"Invalid ObjectId: {pill_id}"})
 
     doc = await col.find_one({"_id": oid})
-    if doc is None:
+    if doc is None or not is_within(doc.get("namespace"), ns):
         return json.dumps({"error": "Pill not found."})
 
     update_fields: dict = {}
@@ -278,15 +333,14 @@ async def update_pill(
         update_fields["tags"] = tags
     if status is not None:
         update_fields["status"] = status
+    if embed_text is not None:
+        update_fields["embed_text"] = embed_text or None
 
     if update_fields:
-        if "title" in update_fields or "content" in update_fields:
-            new_title = update_fields.get("title", doc.get("title", ""))
-            new_content = update_fields.get("content", doc.get("content", ""))
+        new_text = embedding_text_for_doc({**doc, **update_fields})
+        if new_text != embedding_text_for_doc(doc):
             try:
-                update_fields["embedding"] = await get_embedding(
-                    embed_text_for_pill(new_title, new_content)
-                )
+                update_fields["embedding"] = await get_embedding(new_text)
             except Exception as exc:
                 logger.warning(
                     "Embedding refresh failed for %s; keeping the old vector: %s",
@@ -314,19 +368,24 @@ async def update_pill(
 
 
 @mcp.tool()
-async def delete_pill(pill_id: str) -> str:
+async def delete_pill(pill_id: str, namespace: Optional[str] = None) -> str:
     """Archive (soft-delete) a pill.
 
     **When to call:** The stored fact is wrong or the user asked to forget it.
     Same semantics as REST ``DELETE /pills/{id}`` (status becomes archived).
 
     Args:
-        pill_id: 24-character hex ObjectId.
+        pill_id:   24-character hex ObjectId.
+        namespace: Only archive the pill if it lies under this prefix.
 
     Returns:
         JSON ``{"message": "Pill archived.", "id": "..."}``.
         Errors: ``{"error": "..."}``.
     """
+    try:
+        ns = _namespace(namespace)
+    except NamespaceError as exc:
+        return _namespace_error(exc)
     col = await get_collection()
     try:
         oid = ObjectId(pill_id)
@@ -334,7 +393,7 @@ async def delete_pill(pill_id: str) -> str:
         return json.dumps({"error": f"Invalid ObjectId: {pill_id}"})
 
     result = await col.update_one(
-        {"_id": oid},
+        {"_id": oid, **prefix_filter(ns)},
         {"$set": {"status": PillStatus.ARCHIVED.value}},
     )
     if result.matched_count == 0:
@@ -348,14 +407,21 @@ async def delete_pill(pill_id: str) -> str:
 
 
 @mcp.tool()
-async def list_categories() -> str:
+async def list_categories(namespace: Optional[str] = None) -> str:
     """List all distinct categories currently stored in the database.
+
+    Args:
+        namespace: Only count pills under this prefix.
 
     Returns:
         JSON array of category strings.
     """
+    try:
+        ns = _namespace(namespace)
+    except NamespaceError as exc:
+        return _namespace_error(exc)
     col = await get_collection()
-    categories = await col.distinct("category", {"status": "active"})
+    categories = await col.distinct("category", {"status": "active", **prefix_filter(ns)})
     return json.dumps({"categories": sorted(categories)}, ensure_ascii=False)
 
 
@@ -369,6 +435,7 @@ async def ingest_text(
     text: str,
     source_reference: str = "",
     min_confidence: float = 0.5,
+    namespace: Optional[str] = None,
 ) -> str:
     """Ingest unstructured text into long-term memory (LLM extraction + dedup).
 
@@ -382,11 +449,16 @@ async def ingest_text(
         text:             Raw text to mine (can be long).
         source_reference: Provenance label (path, URL, chat id); shown on pills.
         min_confidence:   Drop facts below this threshold (0.0–1.0, default 0.5).
+        namespace:        Namespace for new pills; dedup stays inside it.
 
     Returns:
         JSON: `inserted`, `skipped_duplicate`, `skipped_confidence`, `skipped_short`,
         `stats`, etc. (same shape as REST `POST /pills/ingest`).
     """
+    try:
+        ns = _namespace(namespace)
+    except NamespaceError as exc:
+        return _namespace_error(exc)
     from extractor import run_extraction
 
     result = await run_extraction(
@@ -394,6 +466,7 @@ async def ingest_text(
         source_reference=source_reference or "mcp:ingest_text",
         dry_run=False,
         min_confidence=min_confidence,
+        namespace=ns,
     )
     return json.dumps(result, ensure_ascii=False)
 
@@ -403,6 +476,7 @@ async def ingest_conversation(
     transcript: str,
     source_reference: str = "",
     min_confidence: float = 0.5,
+    namespace: Optional[str] = None,
 ) -> str:
     """Turn a chat transcript into remembered facts (summarize + extract).
 
@@ -414,11 +488,16 @@ async def ingest_conversation(
         transcript:       Full user/assistant transcript.
         source_reference: Session or chat id for provenance.
         min_confidence:   Min fact confidence (0.0–1.0, default 0.5).
+        namespace:        Namespace for new pills; dedup stays inside it.
 
     Returns:
         JSON: same extraction summary shape as `ingest_text` / REST
         `POST /pills/ingest-conversation`.
     """
+    try:
+        ns = _namespace(namespace)
+    except NamespaceError as exc:
+        return _namespace_error(exc)
     from extractor import run_conversation_extraction
 
     result = await run_conversation_extraction(
@@ -426,6 +505,7 @@ async def ingest_conversation(
         source_reference=source_reference or "mcp:ingest_conversation",
         dry_run=False,
         min_confidence=min_confidence,
+        namespace=ns,
     )
     return json.dumps(result, ensure_ascii=False)
 
@@ -446,6 +526,7 @@ async def semantic_search(
     max_nodes: int = 30,
     hybrid: bool = False,
     min_similarity: Optional[float] = None,
+    namespace: Optional[str] = None,
 ) -> str:
     """Vector search over pills by meaning (primary recall tool for memory).
 
@@ -465,12 +546,17 @@ async def semantic_search(
         hybrid:            Fuse keyword matches when there are few vector hits.
         min_similarity:    Drop hits below this cosine similarity (default: env
                            OPENPILL_SEMANTIC_MIN_SIMILARITY, unset = no floor).
+        namespace:         Namespace prefix (default: all, or OPENPILL_MCP_NAMESPACE).
 
     Returns:
         JSON: `count`, `pills` (each with `similarity`, `retrieval_score`,
         `is_superseded`, `_id`, title, content, …), `retrieval_metrics`.
         Ordered by `retrieval_score`. No hits: also a `message`, `count` 0.
     """
+    try:
+        ns = _namespace(namespace)
+    except NamespaceError as exc:
+        return _namespace_error(exc)
     col = await get_collection()
     limit = min(limit, 50)
     neighbor_limit = min(max(neighbor_limit, 0), 50)
@@ -490,6 +576,7 @@ async def semantic_search(
         max_nodes=max_nodes,
         hybrid=hybrid,
         min_similarity=min_similarity,
+        namespace=ns,
     )
     if not result["count"]:
         result["message"] = "No matching pills found."
@@ -502,21 +589,26 @@ async def semantic_search(
 
 
 @mcp.tool()
-async def list_unresolved_conflicts(limit: int = 100) -> str:
+async def list_unresolved_conflicts(limit: int = 100, namespace: Optional[str] = None) -> str:
     """List active pills linked by ``conflicts_with`` (deduplicated pairs).
 
     Same data as ``GET /pills/conflicts``. Use after janitor runs or to audit
     contradictory memories before consolidation.
 
     Args:
-        limit: Max pairs to return (1–500, default 100). Check ``truncated`` in JSON.
+        limit:     Max pairs to return (1–500, default 100). Check ``truncated`` in JSON.
+        namespace: Only pairs whose pills lie under this prefix.
 
     Returns:
         JSON with ``total``, ``pairs`` (pill_id_a/b, title_a/b), ``truncated``.
     """
+    try:
+        ns = _namespace(namespace)
+    except NamespaceError as exc:
+        return _namespace_error(exc)
     col = await get_collection()
     limit = min(max(int(limit), 1), 500)
-    pairs, total = await list_active_conflict_pairs(col, limit=limit)
+    pairs, total = await list_active_conflict_pairs(col, limit=limit, namespace=ns)
     return json.dumps(
         {
             "total": total,
@@ -534,15 +626,20 @@ async def list_unresolved_conflicts(limit: int = 100) -> str:
 
 
 @mcp.tool()
-async def undo_consolidation(pill_id: str) -> str:
+async def undo_consolidation(pill_id: str, namespace: Optional[str] = None) -> str:
     """Revert a janitor consolidation: reactivate archived originals, archive the merged pill.
 
     Args:
-        pill_id: ObjectId of the consolidated (merged) pill to undo.
+        pill_id:   ObjectId of the consolidated (merged) pill to undo.
+        namespace: Only undo if the merged pill lies under this prefix.
 
     Returns:
         JSON confirming which pills were reactivated.
     """
+    try:
+        ns = _namespace(namespace)
+    except NamespaceError as exc:
+        return _namespace_error(exc)
     col = await get_collection()
 
     try:
@@ -551,7 +648,7 @@ async def undo_consolidation(pill_id: str) -> str:
         return json.dumps({"error": f"Invalid ObjectId: {pill_id}"})
 
     doc = await col.find_one({"_id": oid})
-    if doc is None:
+    if doc is None or not is_within(doc.get("namespace"), ns):
         return json.dumps({"error": "Pill not found."})
 
     ref = doc.get("source", {}).get("reference", "")

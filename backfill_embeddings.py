@@ -13,7 +13,7 @@ import asyncio
 import sys
 
 from db import close, get_collection
-from embeddings import embed_text_for_pill, get_embedding
+from embeddings import embedding_text_for_doc, get_embedding
 
 
 async def backfill(category: str | None = None) -> None:
@@ -36,7 +36,7 @@ async def backfill(category: str | None = None) -> None:
     errors = 0
 
     async for doc in col.find(filter_doc):
-        text = embed_text_for_pill(doc["title"], doc["content"])
+        text = embedding_text_for_doc(doc)
         try:
             embedding = await get_embedding(text)
             await col.update_one(

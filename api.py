@@ -15,6 +15,7 @@ OpenAPI spec available at /docs (Swagger UI) and /openapi.json.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -36,8 +37,17 @@ from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
 
 from db import close, get_collection  # noqa: E402
-from embeddings import embed_text_for_pill, get_embedding
+from embeddings import embedding_text_for_doc, get_embedding
 from models import KnowledgePill, PillRelation, PillSource, PillStatus, SourceType
+from namespaces import (
+    NamespaceError,
+    api_key_namespaces,
+    format_namespace,
+    is_within,
+    parse_namespace,
+    prefix_filter,
+    resolve as resolve_namespace,
+)
 from pill_relations import list_active_conflict_pairs, neighbors_for_pill
 from retrieval import (
     attach_consistency_metadata,
@@ -55,6 +65,10 @@ OPENPILL_API_KEY = os.getenv("OPENPILL_API_KEY")
 MEMORA_API_KEY = os.getenv("MEMORA_API_KEY")
 KNOWLEDGE_PILL_API_KEY = os.getenv("KNOWLEDGE_PILL_API_KEY")
 API_KEY = OPENPILL_API_KEY or MEMORA_API_KEY or KNOWLEDGE_PILL_API_KEY
+# Optional: {"<key>": "<namespace prefix>"} keys bound to a namespace (see namespaces.py).
+NAMESPACED_API_KEYS = api_key_namespaces()
+AUTH_ENABLED = bool(API_KEY or NAMESPACED_API_KEYS)
+_SCOPE_NAMESPACE = "openpill.namespace"
 
 
 def _is_public_route(path: str, method: str) -> bool:
@@ -70,17 +84,53 @@ def _is_public_route(path: str, method: str) -> bool:
     return False
 
 
-def _api_key_ok(request: Request) -> bool:
-    if not API_KEY:
-        return True
+def _presented_key(request: Request) -> Optional[str]:
     auth = request.headers.get("Authorization") or ""
     if auth.startswith("Bearer "):
-        if auth[7:].strip() == API_KEY:
-            return True
-    x_key = request.headers.get("X-API-Key")
-    if x_key and x_key == API_KEY:
-        return True
-    return False
+        return auth[7:].strip()
+    return request.headers.get("X-API-Key")
+
+
+def _same_key(a: str, b: str) -> bool:
+    return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
+
+
+def _authenticate(request: Request) -> tuple[bool, Optional[list[str]]]:
+    """Return (ok, bound namespace prefix). The shared API_KEY is unbound."""
+    if not AUTH_ENABLED:
+        return True, None
+    presented = _presented_key(request)
+    if not presented:
+        return False, None
+    if API_KEY and _same_key(presented, API_KEY):
+        return True, None
+    for key, prefix in NAMESPACED_API_KEYS.items():
+        if _same_key(presented, key):
+            return True, prefix
+    return False, None
+
+
+def _api_key_ok(request: Request) -> bool:
+    return _authenticate(request)[0]
+
+
+def _request_namespace(request: Request, requested: Optional[str]) -> Optional[list[str]]:
+    """The namespace a request may act in: its own, narrowed to the key's prefix."""
+    try:
+        parsed = parse_namespace(requested)
+    except NamespaceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        return resolve_namespace(parsed, request.scope.get(_SCOPE_NAMESPACE))
+    except NamespaceError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+_NAMESPACE_QUERY = Query(
+    default=None,
+    description="Namespace prefix such as 'jjones/job_tracker' (default: all, "
+    "or the API key's namespace).",
+)
 
 
 def _idempotency_header(request: Request) -> Optional[str]:
@@ -100,18 +150,24 @@ class CreatePillRequest(BaseModel):
     source_type: str = Field(default="manual")
     source_reference: str = Field(default="")
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
+    namespace: Optional[str] = Field(default=None, description="e.g. 'jjones/job_tracker'")
+    embed_text: Optional[str] = Field(
+        default=None, description="Text to embed instead of title + content"
+    )
 
 
 class IngestRequest(BaseModel):
     text: str = Field(..., min_length=1)
     source_reference: str = Field(default="")
     min_confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    namespace: Optional[str] = Field(default=None, description="Namespace for new pills")
 
 
 class ConversationIngestRequest(BaseModel):
     transcript: str = Field(..., min_length=1)
     source_reference: str = Field(default="")
     min_confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    namespace: Optional[str] = Field(default=None, description="Namespace for new pills")
 
 
 # ---------------------------------------------------------------------------
@@ -191,9 +247,11 @@ async def ingest_body_replay_middleware(request: Request, call_next):
 # outermost, then auth.
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    if not API_KEY or _is_public_route(request.url.path, request.method):
+    if not AUTH_ENABLED or _is_public_route(request.url.path, request.method):
         return await call_next(request)
-    if _api_key_ok(request):
+    ok, bound = _authenticate(request)
+    if ok:
+        request.scope[_SCOPE_NAMESPACE] = bound
         return await call_next(request)
     return JSONResponse(
         status_code=401,
@@ -230,12 +288,13 @@ async def health():
 
 
 @app.get("/stats")
-async def stats():
+async def stats(request: Request, namespace: Optional[str] = _NAMESPACE_QUERY):
     """Aggregate counts for observability (active pills, graph edges)."""
     col = await get_collection()
-    active = await col.count_documents({"status": "active"})
+    scope = prefix_filter(_request_namespace(request, namespace))
+    active = await col.count_documents({"status": "active", **scope})
     with_rel = await col.count_documents(
-        {"status": "active", "relations.0": {"$exists": True}}
+        {"status": "active", "relations.0": {"$exists": True}, **scope}
     )
     return {
         "active_pills": active,
@@ -245,12 +304,14 @@ async def stats():
 
 @app.get("/pills/conflicts")
 async def list_conflicts(
+    request: Request,
     limit: int = Query(
         default=100,
         ge=1,
         le=500,
         description="Max conflict pairs to return (total may be larger).",
     ),
+    namespace: Optional[str] = _NAMESPACE_QUERY,
 ):
     """List unresolved ``conflicts_with`` edges between active pills (deduplicated pairs).
 
@@ -258,7 +319,9 @@ async def list_conflicts(
     that adds ``conflicts_with`` relations. Use for human review or agent tooling.
     """
     col = await get_collection()
-    pairs, total = await list_active_conflict_pairs(col, limit=limit)
+    pairs, total = await list_active_conflict_pairs(
+        col, limit=limit, namespace=_request_namespace(request, namespace)
+    )
     return {
         "total": total,
         "limit": limit,
@@ -269,16 +332,18 @@ async def list_conflicts(
 
 @app.get("/pills/search")
 async def search_pills(
+    request: Request,
     q: Optional[str] = Query(default=None, description="Full-text search query"),
     category: Optional[str] = Query(default=None),
     tags: Optional[str] = Query(default=None, description="Comma-separated tags (AND logic)"),
     status: str = Query(default="active"),
     limit: int = Query(default=20, ge=1, le=100),
+    namespace: Optional[str] = _NAMESPACE_QUERY,
 ):
     """Search knowledge pills by keyword, category, or tags."""
     col = await get_collection()
 
-    filter_doc: dict = {"status": status}
+    filter_doc: dict = {"status": status, **prefix_filter(_request_namespace(request, namespace))}
     if q:
         filter_doc["$text"] = {"$search": q}
     if category:
@@ -293,6 +358,7 @@ async def search_pills(
 
 @app.get("/pills/semantic")
 async def semantic_search(
+    request: Request,
     q: str = Query(..., description="Natural language query"),
     category: Optional[str] = Query(default=None),
     limit: int = Query(default=10, ge=1, le=50),
@@ -329,8 +395,10 @@ async def semantic_search(
         description="Drop vector hits below this cosine similarity "
         "(default: OPENPILL_SEMANTIC_MIN_SIMILARITY, unset = no floor).",
     ),
+    namespace: Optional[str] = _NAMESPACE_QUERY,
 ):
     """Find pills by meaning using vector similarity + consistency metadata."""
+    ns = _request_namespace(request, namespace)
     col = await get_collection()
     query_embedding = await get_embedding(q)
     return await semantic_retrieve(
@@ -345,15 +413,19 @@ async def semantic_search(
         max_nodes=max_nodes,
         hybrid=hybrid,
         min_similarity=min_similarity,
+        namespace=ns,
     )
 
 
 @app.get("/pills/{pill_id}/neighbors")
-async def get_pill_neighbors(pill_id: str):
+async def get_pill_neighbors(
+    pill_id: str, request: Request, namespace: Optional[str] = _NAMESPACE_QUERY
+):
     """Outgoing and incoming related pills (1-hop graph edges)."""
+    ns = _request_namespace(request, namespace)
     col = await get_collection()
     try:
-        center, outgoing, incoming = await neighbors_for_pill(col, pill_id)
+        center, outgoing, incoming = await neighbors_for_pill(col, pill_id, namespace=ns)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if center is None:
@@ -390,8 +462,9 @@ async def get_pill_neighbors(pill_id: str):
 
 
 @app.get("/pills/{pill_id}")
-async def get_pill(pill_id: str):
+async def get_pill(pill_id: str, request: Request, namespace: Optional[str] = _NAMESPACE_QUERY):
     """Retrieve a single pill by its ObjectId."""
+    ns = _request_namespace(request, namespace)
     col = await get_collection()
     try:
         oid = ObjectId(pill_id)
@@ -399,7 +472,7 @@ async def get_pill(pill_id: str):
         raise HTTPException(status_code=400, detail=f"Invalid ObjectId: {pill_id}") from exc
 
     doc = await col.find_one({"_id": oid}, {"embedding": 0})
-    if doc is None:
+    if doc is None or not is_within(doc.get("namespace"), ns):
         raise HTTPException(status_code=404, detail="Pill not found")
     out = _serialize_doc(doc)
     is_superseded = await _is_superseded_in_db(col, out["_id"])
@@ -420,11 +493,21 @@ class UpdatePillRequest(BaseModel):
     tags: Optional[list[str]] = None
     status: Optional[str] = None
     relations: Optional[list[PillRelation]] = None
+    embed_text: Optional[str] = Field(
+        default=None,
+        description="Text to embed instead of title + content; '' clears the override",
+    )
 
 
 @app.patch("/pills/{pill_id}")
-async def update_pill(pill_id: str, req: UpdatePillRequest):
-    """Update selected fields of a pill and re-embed if title/content changed."""
+async def update_pill(
+    pill_id: str,
+    req: UpdatePillRequest,
+    request: Request,
+    namespace: Optional[str] = _NAMESPACE_QUERY,
+):
+    """Update selected fields of a pill and re-embed if its embedding text changed."""
+    ns = _request_namespace(request, namespace)
     col = await get_collection()
     try:
         oid = ObjectId(pill_id)
@@ -432,7 +515,7 @@ async def update_pill(pill_id: str, req: UpdatePillRequest):
         raise HTTPException(status_code=400, detail=f"Invalid ObjectId: {pill_id}") from exc
 
     doc = await col.find_one({"_id": oid})
-    if doc is None:
+    if doc is None or not is_within(doc.get("namespace"), ns):
         raise HTTPException(status_code=404, detail="Pill not found")
 
     update_fields: dict = {}
@@ -449,17 +532,16 @@ async def update_pill(pill_id: str, req: UpdatePillRequest):
         update_fields["status"] = req.status
     if req.relations is not None:
         update_fields["relations"] = [r.model_dump(mode="json") for r in req.relations]
+    if req.embed_text is not None:
+        update_fields["embed_text"] = req.embed_text or None
 
     if not update_fields:
         return _serialize_doc(doc)
 
-    if "title" in update_fields or "content" in update_fields:
-        new_title = update_fields.get("title", doc.get("title", ""))
-        new_content = update_fields.get("content", doc.get("content", ""))
+    new_text = embedding_text_for_doc({**doc, **update_fields})
+    if new_text != embedding_text_for_doc(doc):
         try:
-            update_fields["embedding"] = await get_embedding(
-                embed_text_for_pill(new_title, new_content)
-            )
+            update_fields["embedding"] = await get_embedding(new_text)
         except Exception as exc:
             logger.warning(
                 "Embedding refresh failed for %s; keeping the old vector: %s",
@@ -478,8 +560,9 @@ async def update_pill(pill_id: str, req: UpdatePillRequest):
 
 
 @app.post("/pills", status_code=201)
-async def create_pill(req: CreatePillRequest):
+async def create_pill(req: CreatePillRequest, request: Request):
     """Create a new knowledge pill (auto-embeds on creation)."""
+    ns = _request_namespace(request, req.namespace)
     col = await get_collection()
 
     pill = KnowledgePill(
@@ -489,10 +572,12 @@ async def create_pill(req: CreatePillRequest):
         tags=req.tags,
         source=PillSource(type=SourceType(req.source_type), reference=req.source_reference),
         confidence=req.confidence,
+        namespace=list(ns or []),
+        embed_text=req.embed_text or None,
     )
 
     try:
-        pill.embedding = await get_embedding(embed_text_for_pill(req.title, req.content))
+        pill.embedding = await get_embedding(embedding_text_for_doc(pill.model_dump()))
     except Exception as exc:
         # The pill is still stored, but it stays invisible to /pills/semantic
         # until an embedding is backfilled.
@@ -501,7 +586,12 @@ async def create_pill(req: CreatePillRequest):
         )
 
     result = await col.insert_one(pill.to_mongo())
-    return {"message": "Pill created.", "id": str(result.inserted_id), "title": req.title}
+    return {
+        "message": "Pill created.",
+        "id": str(result.inserted_id),
+        "title": req.title,
+        "namespace": format_namespace(ns),
+    }
 
 
 @app.post("/pills/ingest")
@@ -518,6 +608,7 @@ async def ingest_text(request: Request, req: IngestRequest):
     body_hash = hashlib.sha256(body_bytes).hexdigest()
     idem_key = _idempotency_header(request)
 
+    ns = _request_namespace(request, req.namespace)
     replay = await resolve_idempotency(idem_key, route, body_hash)
     if replay is not None:
         return replay
@@ -529,6 +620,7 @@ async def ingest_text(request: Request, req: IngestRequest):
         source_reference=req.source_reference or "api:ingest",
         dry_run=False,
         min_confidence=req.min_confidence,
+        namespace=ns,
     )
     await store_idempotent_response(idem_key, route, body_hash, result)
     return result
@@ -547,6 +639,7 @@ async def ingest_conversation(request: Request, req: ConversationIngestRequest):
     body_hash = hashlib.sha256(body_bytes).hexdigest()
     idem_key = _idempotency_header(request)
 
+    ns = _request_namespace(request, req.namespace)
     replay = await resolve_idempotency(idem_key, route, body_hash)
     if replay is not None:
         return replay
@@ -558,38 +651,47 @@ async def ingest_conversation(request: Request, req: ConversationIngestRequest):
         source_reference=req.source_reference or "api:ingest-conversation",
         dry_run=False,
         min_confidence=req.min_confidence,
+        namespace=ns,
     )
     await store_idempotent_response(idem_key, route, body_hash, result)
     return result
 
 
 @app.get("/categories")
-async def list_categories():
+async def list_categories(request: Request, namespace: Optional[str] = _NAMESPACE_QUERY):
     """List all distinct categories of active pills."""
+    scope = prefix_filter(_request_namespace(request, namespace))
     col = await get_collection()
-    categories = await col.distinct("category", {"status": "active"})
+    categories = await col.distinct("category", {"status": "active", **scope})
     return {"categories": sorted(categories)}
 
 
 @app.get("/topics/snapshot")
 async def topics_snapshot(
+    request: Request,
     top_terms: int = Query(default=20, ge=1, le=100),
     per_category: int = Query(default=10, ge=1, le=50),
     min_doc_freq: int = Query(default=2, ge=1, le=20),
     min_token_len: int = Query(default=3, ge=2, le=20),
+    namespace: Optional[str] = _NAMESPACE_QUERY,
 ):
     """Classical NLP topic overview over active pills (read-only analytics)."""
+    ns = _request_namespace(request, namespace)
     return await build_topic_snapshot(
         top_terms=top_terms,
         per_category=per_category,
         min_doc_freq=min_doc_freq,
         min_token_len=min_token_len,
+        namespace=ns,
     )
 
 
 @app.delete("/pills/{pill_id}/consolidation")
-async def undo_consolidation(pill_id: str):
+async def undo_consolidation(
+    pill_id: str, request: Request, namespace: Optional[str] = _NAMESPACE_QUERY
+):
     """Revert a janitor consolidation: reactivate archived originals."""
+    ns = _request_namespace(request, namespace)
     col = await get_collection()
 
     try:
@@ -598,7 +700,7 @@ async def undo_consolidation(pill_id: str):
         raise HTTPException(status_code=400, detail=f"Invalid ObjectId: {pill_id}") from exc
 
     doc = await col.find_one({"_id": oid})
-    if doc is None:
+    if doc is None or not is_within(doc.get("namespace"), ns):
         raise HTTPException(status_code=404, detail="Pill not found")
 
     ref = doc.get("source", {}).get("reference", "")
@@ -626,8 +728,9 @@ async def undo_consolidation(pill_id: str):
 
 
 @app.delete("/pills/{pill_id}")
-async def delete_pill(pill_id: str):
+async def delete_pill(pill_id: str, request: Request, namespace: Optional[str] = _NAMESPACE_QUERY):
     """Archive (soft-delete) a pill."""
+    ns = _request_namespace(request, namespace)
     col = await get_collection()
 
     try:
@@ -636,7 +739,7 @@ async def delete_pill(pill_id: str):
         raise HTTPException(status_code=400, detail=f"Invalid ObjectId: {pill_id}") from exc
 
     result = await col.update_one(
-        {"_id": oid},
+        {"_id": oid, **prefix_filter(ns)},
         {"$set": {"status": PillStatus.ARCHIVED.value}},
     )
     if result.matched_count == 0:

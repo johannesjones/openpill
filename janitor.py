@@ -45,6 +45,7 @@ from pydantic import BaseModel, Field
 from db import archive_expired, close, get_collection
 from embeddings import embed_text_for_pill, get_embedding
 from models import KnowledgePill, PillRelationKind, PillSource, PillStatus, SourceType
+from namespaces import format_namespace
 from pill_relations import add_bidirectional_relation, rewire_relations_on_merge
 
 MODEL = os.getenv("JANITOR_MODEL", "gpt-4o-mini")
@@ -265,7 +266,11 @@ async def consolidate_pills(
 
 
 async def fetch_pills_by_category(col) -> dict[str, list[dict]]:
-    """Load all active pills, grouped by category, minus excluded categories."""
+    """Load all active pills, grouped by category, minus excluded categories.
+
+    Pills in a namespace are grouped under ``"<namespace>::<category>"`` so the
+    janitor never compares or merges pills across namespaces.
+    """
     groups: dict[str, list[dict]] = defaultdict(list)
     excluded = excluded_categories()
     cursor = col.find({"status": "active"}, {"embedding": 0})
@@ -273,7 +278,8 @@ async def fetch_pills_by_category(col) -> dict[str, list[dict]]:
         if doc.get("category") in excluded:
             continue
         doc["_id"] = str(doc["_id"])
-        groups[doc["category"]].append(doc)
+        ns = format_namespace(doc.get("namespace"))
+        groups[f"{ns}::{doc['category']}" if ns else doc["category"]].append(doc)
     return groups
 
 
@@ -314,12 +320,17 @@ async def apply_consolidation(
     original_ids: list[str],
     category: str,
     reason: str = "",
+    namespace: list[str] | None = None,
 ) -> str:
-    """Insert the merged pill, archive the originals, and write an audit log."""
+    """Insert the merged pill, archive the originals, and write an audit log.
+
+    The merged pill keeps the originals' namespace (they always share one).
+    """
     pill = KnowledgePill(
         title=consolidated.title,
         content=consolidated.content,
         category=category,
+        namespace=list(namespace or []),
         tags=consolidated.tags,
         source=PillSource(
             type=SourceType.DOCUMENT,
@@ -385,14 +396,16 @@ async def run_janitor(
     total_consolidated = 0
     ops_remaining = max_ops
 
-    for category, pills in sorted(categories.items()):
+    for group_key, pills in sorted(categories.items()):
         if len(pills) < 2:
             continue
+        category = pills[0]["category"]
+        namespace = pills[0].get("namespace") or []
         if ops_remaining is not None and ops_remaining <= 0:
             print("Max operations reached. Stopping.")
             break
 
-        print(f"--- Category: {category} ({len(pills)} pills) ---")
+        print(f"--- Category: {group_key} ({len(pills)} pills) ---")
 
         for batch in chunk(pills, BATCH_SIZE):
             analysis = await analyze_batch(batch)
@@ -421,7 +434,8 @@ async def run_janitor(
                     reason = f"contradiction: {c.explanation}"
                     merged = await consolidate_pills(pair, reason)
                     new_id = await apply_consolidation(
-                        col, merged, [c.pill_id_a, c.pill_id_b], category, reason
+                        col, merged, [c.pill_id_a, c.pill_id_b], category, reason,
+                        namespace=namespace,
                     )
                     total_consolidated += 1
                     if ops_remaining is not None:
@@ -446,7 +460,8 @@ async def run_janitor(
                     reason = f"redundancy: {r.explanation}"
                     merged = await consolidate_pills(group, reason)
                     new_id = await apply_consolidation(
-                        col, merged, r.pill_ids, category, reason
+                        col, merged, r.pill_ids, category, reason,
+                        namespace=namespace,
                     )
                     total_consolidated += 1
                     if ops_remaining is not None:

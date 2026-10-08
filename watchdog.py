@@ -33,6 +33,7 @@ from datetime import datetime
 
 from db import close, get_collection
 from embeddings import cosine_similarity
+from namespaces import exact_filter
 from janitor import (
     analyze_batch,
     apply_consolidation,
@@ -74,6 +75,7 @@ async def find_neighbors(
             "category": category,
             "_id": {"$ne": new_id},
             "embedding": {"$exists": True, "$ne": None},
+            **exact_filter(pill_doc.get("namespace")),
         }
     ):
         score = cosine_similarity(new_embedding, doc["embedding"])
@@ -122,7 +124,9 @@ async def handle_new_pill(
         if len(pair) == 2:
             reason = f"watchdog:contradiction: {c.explanation}"
             merged = await consolidate_pills(pair, reason)
-            new_id = await apply_consolidation(col, merged, ids, category, reason)
+            new_id = await apply_consolidation(
+                col, merged, ids, category, reason, namespace=pill_doc.get("namespace")
+            )
             print(f"      -> Auto-consolidated into: {merged.title!r} (id: {new_id})")
 
     for r in analysis.redundancies:
@@ -134,7 +138,9 @@ async def handle_new_pill(
         if len(group) >= 2:
             reason = f"watchdog:redundancy: {r.explanation}"
             merged = await consolidate_pills(group, reason)
-            new_id = await apply_consolidation(col, merged, r.pill_ids, category, reason)
+            new_id = await apply_consolidation(
+                col, merged, r.pill_ids, category, reason, namespace=pill_doc.get("namespace")
+            )
             print(f"      -> Auto-consolidated into: {merged.title!r} (id: {new_id})")
 
 

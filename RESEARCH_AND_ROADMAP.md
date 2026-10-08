@@ -100,9 +100,9 @@ Compared against the LangChain/LangGraph memory pages (Memory overview, Short-te
 | LangGraph concept | OpenPill today | Gap / note |
 |-------------------|----------------|------------|
 | Checkpointer, `thread_id` (short-term) | Out of scope | The tracker agent compiles its graph **without a checkpointer**, so it has no thread memory either |
-| Store: namespace + key + JSON value | One flat collection; ObjectId as key; `category` is the only grouping | **No namespaces / no `user_id`** → single-tenant. REST has one optional shared key (`OPENPILL_API_KEY`); MCP has no auth |
+| Store: namespace + key + JSON value | One collection; ObjectId as key; optional `namespace` path (prefix reads) | Namespaces since Phase 3; keys can be bound to a prefix (`OPENPILL_API_KEYS`); MCP has no auth, only `OPENPILL_MCP_NAMESPACE` |
 | `store.search(ns, query=, filter=)` | `/pills/semantic` (category filter), `/pills/search` (text, category, tags) | Similarity is **brute-force cosine in Python**; `models.py` mentions Atlas `vectorSearch`, but `db.py` creates no vector index |
-| Embedding config on the store (`index`) | `embed_text_for_pill`; LiteLLM model via `EMBEDDING_MODEL` | Callers that store whole JSON records (the tracker) get a narrow similarity band; embed selected text fields instead |
+| Embedding config on the store (`index`) | `title + content` by default; per-pill `embed_text` override; LiteLLM model via `EMBEDDING_MODEL` | Callers with JSON content (the tracker) should send `embed_text` |
 | Ranking = vector similarity | `0.6·confidence + 0.25·freshness + 0.15·similarity`, lexical fusion when < 3 vector hits, 1–2-hop neighbor expansion | **Ahead of the docs.** (Freshness was stuck at 0.5 on semantic search and single reads — fixed) |
 | Semantic memory: profile vs collection | **Collection** of atomic pills | The tracker uses OpenPill **profile-style** (one record per company); code merges it, which avoids the docs' warning about LLM-regenerated profiles |
 | Episodic memory (few-shot from past runs) | Conversation summaries via `ingest-conversation` | No few-shot example selection |
@@ -133,9 +133,11 @@ Compared against the LangChain/LangGraph memory pages (Memory overview, Short-te
 - [ ] Before setting `OPENPILL_SEMANTIC_MIN_SIMILARITY` globally, measure the job tracker's records (embedded as JSON) — or have the tracker pass `min_similarity` per call and embed readable text (Phase 3 `embed_text`)
 - [ ] Try nomic's `search_query:` / `search_document:` prefixes and re-run the live eval; grow the eval set beyond 41 questions before trusting a 0.03 margin
 
-*Phase 3 — namespaces (LangGraph store model)*
-- [ ] Optional `namespace` on pills, filtered on every read/write; janitor/watchdog never merge across namespaces; per-key namespace prefixes
-- [ ] `embed_text` override so callers embed a readable summary instead of a JSON blob
+*Phase 3 — namespaces (LangGraph store model) (done)*
+- [x] Optional `namespace` on pills (prefix reads, exact-namespace dedup/links/janitor/watchdog), on REST and MCP
+- [x] `OPENPILL_API_KEYS` binds keys to a namespace prefix; `OPENPILL_MCP_NAMESPACE` binds an MCP process
+- [x] `embed_text` override so callers embed a readable summary instead of a JSON blob
+- [ ] Job tracker: send `namespace` + `embed_text`, use a bound key, then re-check the 0.57 floor on its records
 
 *Phase 4 — temporal validity + update decisions (Graphiti, Mem0)*
 - [ ] `valid_at` / `invalid_at`; contradictions invalidate the old fact instead of merging it away
@@ -232,3 +234,4 @@ That gives you **explainable “why these two memories are connected”** and a 
 | 2026-10-08 | Phase 1 correctness fixes done; follow-ups replaced by a phased improvement plan |
 | 2026-10-08 | Phase 2 done: shared retrieval pipeline, similarity floor, memory-quality eval |
 | 2026-10-08 | Relevance-led ranking; live eval calibrated floor 0.57 for nomic-embed-text |
+| 2026-10-08 | Phase 3 done: namespaces, namespace-bound API keys, embed_text |

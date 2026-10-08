@@ -13,6 +13,7 @@ from bson.errors import InvalidId
 
 from embeddings import cosine_similarity
 from models import PillRelationKind, normalize_relation_kind
+from namespaces import exact_filter, is_within, prefix_filter
 
 
 def sanitize_relations(relations: list[dict] | None) -> list[dict]:
@@ -43,6 +44,7 @@ async def list_active_conflict_pairs(
     col,
     *,
     limit: int = 100,
+    namespace: list[str] | None = None,
 ) -> tuple[list[dict[str, str]], int]:
     """List unique **active**↔**active** ``conflicts_with`` pairs (canonical id order).
 
@@ -66,6 +68,7 @@ async def list_active_conflict_pairs(
             }
         },
     }
+    query.update(prefix_filter(namespace))
     projection = {"_id": 1, "relations": 1}
     async for doc in col.find(query, projection):
         sid = str(doc["_id"])
@@ -97,7 +100,7 @@ async def list_active_conflict_pairs(
     titles: dict[str, str] = {}
     if oids:
         async for d in col.find(
-            {"_id": {"$in": oids}, "status": "active"},
+            {"_id": {"$in": oids}, "status": "active", **prefix_filter(namespace)},
             {"_id": 1, "title": 1},
         ):
             titles[str(d["_id"])] = (d.get("title") or "")[:200]
@@ -168,9 +171,11 @@ async def find_related_candidates(
     high: float,
     exclude_id: ObjectId | None,
     max_links: int,
+    namespace: list[str] | None = None,
 ) -> list[dict]:
     """
-    Pills with same category and cosine similarity in [low, high), excluding exclude_id.
+    Pills with same category and namespace and cosine similarity in [low, high),
+    excluding exclude_id.
     Sorted by similarity descending, capped at max_links.
     """
     matches: list[dict] = []
@@ -179,6 +184,7 @@ async def find_related_candidates(
             "status": "active",
             "category": category,
             "embedding": {"$exists": True, "$ne": None},
+            **exact_filter(namespace),
         },
         {"title": 1, "embedding": 1},
     ):
@@ -232,14 +238,17 @@ async def fetch_pills_by_ids(
     return out
 
 
-async def neighbors_for_pill(col, pill_id: str) -> tuple[dict | None, list[dict], list[dict]]:
+async def neighbors_for_pill(
+    col, pill_id: str, namespace: list[str] | None = None
+) -> tuple[dict | None, list[dict], list[dict]]:
     """
     Returns (center_doc_or_none, outgoing_serialized, incoming_serialized).
     Caller serializes docs; we return raw docs with embedding stripped for lists.
+    With ``namespace``, the center and its neighbors must lie under that prefix.
     """
     oid = parse_object_id(pill_id)
     center = await col.find_one({"_id": oid})
-    if center is None:
+    if center is None or not is_within(center.get("namespace"), namespace):
         return None, [], []
 
     rels = center.get("relations") or []
@@ -251,6 +260,8 @@ async def neighbors_for_pill(col, pill_id: str) -> tuple[dict | None, list[dict]
         tid = r.get("target_id")
         if not tid or tid not in targets:
             continue
+        if not is_within(targets[tid].get("namespace"), namespace):
+            continue
         d = targets[tid].copy()
         d["_id"] = str(d["_id"])
         d["edge_kind"] = r.get("kind", "related")
@@ -258,7 +269,7 @@ async def neighbors_for_pill(col, pill_id: str) -> tuple[dict | None, list[dict]
 
     incoming_raw: list[dict] = []
     async for doc in col.find(
-        {"relations.target_id": pill_id, "status": "active"},
+        {"relations.target_id": pill_id, "status": "active", **prefix_filter(namespace)},
         {"embedding": 0},
     ):
         incoming_raw.append(doc)
@@ -313,8 +324,11 @@ async def expand_semantic_neighbors_hops(
     max_hops: int = 1,
     max_nodes: int = 30,
     hop_decay: float = 0.12,
+    namespace: list[str] | None = None,
 ) -> list[dict]:
     """Expand semantic hits through graph neighbors with optional multi-hop traversal.
+
+    With ``namespace``, only neighbors under that prefix are added.
 
     Guardrails:
     - neighbor_limit: cap total added neighbors.
@@ -352,7 +366,9 @@ async def expand_semantic_neighbors_hops(
                 noid = ObjectId(tid)
             except (InvalidId, TypeError):
                 continue
-            neighbor = await col.find_one({"_id": noid, "status": "active"}, {"embedding": 0})
+            neighbor = await col.find_one(
+                {"_id": noid, "status": "active", **prefix_filter(namespace)}, {"embedding": 0}
+            )
             if neighbor:
                 ser = serialize_pill_doc(neighbor.copy())
                 ser["via_pill_id"] = seed["_id"]

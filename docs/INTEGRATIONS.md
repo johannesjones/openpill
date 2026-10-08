@@ -121,7 +121,7 @@ See also the **Cursor Integration** section in the main [`README.md`](../README.
 - **OpenAPI:** `/openapi.json` and interactive `/docs`.
 - **Health (probes):** `GET /health` — returns `{"status":"ok"}`; does not require MongoDB.
 
-When exposing the API beyond localhost, set optional **`OPENPILL_API_KEY`** (legacy: `MEMORA_API_KEY`, `KNOWLEDGE_PILL_API_KEY`) and send `Authorization: Bearer <key>` or `X-API-Key: <key>`. See [`OPS.md`](OPS.md).
+When exposing the API beyond localhost, set optional **`OPENPILL_API_KEY`** (legacy: `MEMORA_API_KEY`, `KNOWLEDGE_PILL_API_KEY`) and send `Authorization: Bearer <key>` or `X-API-Key: <key>`. See [`OPS.md`](OPS.md). To give one client its own slice of memory, bind a key to a namespace with **`OPENPILL_API_KEYS`** and send readable **`embed_text`** for non-prose content (see OPS, "Namespaces").
 
 **Idempotent ingest:** For `POST /pills/ingest` and `POST /pills/ingest-conversation`, you may send header **`Idempotency-Key`**. Retries with the **same key and identical JSON body** receive the same successful response; the same key with a **different body** returns **409 Conflict**. Keys expire from storage after the TTL (see OPS).
 

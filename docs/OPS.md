@@ -78,6 +78,21 @@
   - `Authorization: Bearer <key>`, or
   - `X-API-Key: <key>`
 - **Public without key** (when the env var is set): `GET /health`, `GET /docs`, `GET /openapi.json`, `GET /redoc`, `GET /`, `GET /app`, and static files under `/static/`.
+- **`OPENPILL_API_KEYS`** (optional) — JSON object mapping extra keys to a namespace prefix, e.g. `{"<tracker-key>": "jjones/job_tracker"}`. A request with such a key only sees and writes pills under that prefix; it may narrow it (`namespace=jjones/job_tracker/drafts`) but never leave it (403). The shared `OPENPILL_API_KEY` stays unrestricted. An empty prefix (`""`) also means unrestricted. Keys are compared in constant time.
+
+## Namespaces
+
+Pills can carry a **`namespace`**, a path like `jjones/job_tracker` (letters, digits, `_ . @ -`; up to 6 segments). It is stored as a list (`["jjones", "job_tracker"]`). Pills without one are in the global namespace, which includes everything written before namespaces existed.
+
+- **Write:** `namespace` in the body of `POST /pills`, `POST /pills/ingest`, `POST /pills/ingest-conversation` (MCP: the `namespace` argument of `create_pill`, `ingest_text`, `ingest_conversation`).
+- **Read:** `namespace` query parameter (MCP argument) on search, semantic search, get, neighbors, categories, stats, conflicts and topics. It is a prefix: `jjones` matches `jjones/job_tracker`. Without it, reads cover every namespace (unless the API key is bound).
+- **By id:** get, PATCH, DELETE and undo-consolidation answer 404 when the pill lies outside the given namespace.
+- **Isolation:** dedup, same-source merges, auto-links, janitor and watchdog only compare pills in the **same exact** namespace, and merged pills keep it. Graph expansion in semantic search stays under the read prefix.
+- **MCP:** `OPENPILL_MCP_NAMESPACE` binds one MCP server process to a prefix, like a bound API key (MCP itself has no auth).
+
+## Embedding text override (`embed_text`)
+
+By default a pill is embedded as `title + "\n" + content`. Clients whose content is not prose (e.g. JSON records) can send **`embed_text`** on create or update (REST and MCP) with a readable summary to embed instead. On update, the vector is refreshed only when the effective embedding text changes; `embed_text: ""` clears the override. `backfill_embeddings.py` honours the override.
 
 ## Structured request logging
 
