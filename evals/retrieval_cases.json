@@ -3,10 +3,11 @@
   "description": "Memory-quality eval for semantic retrieval. Question types follow LoCoMo / LongMemEval: single_hop, multi_hop (needs graph expansion), temporal (newer fact should win), knowledge_update (superseded fact should lose), abstention (nothing relevant -> empty). Pills are keyed; age_days sets updated_at.",
   "settings": {
     "hash": { "min_similarity": 0.2 },
-    "live": { "min_similarity": null }
+    "live": { "min_similarity": 0.57, "model": "ollama/nomic-embed-text" }
   },
   "baseline": {
-    "hash": { "single_hop": 0.93, "multi_hop": 1.0, "temporal": 1.0, "knowledge_update": 1.0, "abstention": 1.0 }
+    "hash": { "single_hop": 0.93, "multi_hop": 1.0, "temporal": 1.0, "knowledge_update": 1.0, "abstention": 1.0 },
+    "live": { "single_hop": 1.0, "multi_hop": 0.83, "temporal": 1.0, "knowledge_update": 1.0, "abstention": 1.0 }
   },
   "pills": [
     { "key": "docker_cache", "category": "devops", "age_days": 20, "title": "Docker layer caching", "content": "Order Dockerfile instructions so dependency installation is cached before copying source code." },

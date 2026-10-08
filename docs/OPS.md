@@ -54,7 +54,7 @@
 
 - REST `GET /pills/semantic` and MCP `semantic_search` share one pipeline (`retrieval.py`).
 - **`OPENPILL_SEMANTIC_MIN_SIMILARITY`** (default unset = no floor): drop vector hits below this cosine similarity, so an unrelated query can return nothing. Per call: `min_similarity` (REST query param, MCP argument).
-- The right value depends on the embedding model; measure it with `make retrieval-eval-live` before setting it.
+- The right value depends on the embedding model; measure it with `make retrieval-eval-live` before setting it. For **`ollama/nomic-embed-text`** the eval passes every question type at **0.57** (2026-10-08). The margin is narrow: the most similar unrelated pill scored 0.556, the weakest real match 0.585. Clients that embed something other than short prose (e.g. JSON records) have a different similarity range, so check them before setting the env default; the per-call `min_similarity` is the safer start.
 - `retrieval_metrics` reports `min_similarity` and `below_min_similarity` (how many pills the floor dropped).
 - Ranking: the top `limit` pills by similarity are ordered by `retrieval_score` = 0.6·relevance + 0.2·confidence + 0.2·freshness, minus penalties for conflicts (up to 0.2) and supersession (0.15). `relevance_score` is the similarity min-max normalized over all pills scanned, so close matches stay close and freshness/supersedes can order them. A superseded pill is never ranked above a pill that supersedes it. Single-pill reads (no query) keep 0.6·confidence + 0.25·freshness.
 

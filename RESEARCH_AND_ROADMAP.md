@@ -129,7 +129,9 @@ Compared against the LangChain/LangGraph memory pages (Memory overview, Short-te
 - [x] 41-question eval set by type (`evals/`, `make retrieval-eval`, live mode against the real embedder)
 - [x] Optional similarity floor (`OPENPILL_SEMANTIC_MIN_SIMILARITY` / `min_similarity`)
 - [x] Relevance-led ranking (Generative Agents style: 0.6·relevance + 0.2·confidence + 0.2·freshness, relevance min-max normalized over scanned pills; superseded pills never above their successor). Offline without a floor, single-hop went from 0.56 to 1.0
-- [ ] Pick a default similarity floor per embedding model with `make retrieval-eval-live` (abstention needs a floor)
+- [x] Live eval with `ollama/nomic-embed-text`: no floor → recall types 0.83–1.0, abstention 0.0; floor 0.57 → every type 1.0 (narrow margin: 0.556 unrelated vs 0.585 relevant)
+- [ ] Before setting `OPENPILL_SEMANTIC_MIN_SIMILARITY` globally, measure the job tracker's records (embedded as JSON) — or have the tracker pass `min_similarity` per call and embed readable text (Phase 3 `embed_text`)
+- [ ] Try nomic's `search_query:` / `search_document:` prefixes and re-run the live eval; grow the eval set beyond 41 questions before trusting a 0.03 margin
 
 *Phase 3 — namespaces (LangGraph store model)*
 - [ ] Optional `namespace` on pills, filtered on every read/write; janitor/watchdog never merge across namespaces; per-key namespace prefixes
@@ -229,4 +231,4 @@ That gives you **explainable “why these two memories are connected”** and a 
 | 2026-10-06 | Added LangGraph memory docs ↔ OpenPill comparison + follow-ups |
 | 2026-10-08 | Phase 1 correctness fixes done; follow-ups replaced by a phased improvement plan |
 | 2026-10-08 | Phase 2 done: shared retrieval pipeline, similarity floor, memory-quality eval |
-| 2026-10-08 | Relevance-led ranking |
+| 2026-10-08 | Relevance-led ranking; live eval calibrated floor 0.57 for nomic-embed-text |
